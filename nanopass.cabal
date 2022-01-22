@@ -1,0 +1,68 @@
+cabal-version: 3.0
+name: nanopass
+version: 0.0.1.0
+-- synopsis: 
+-- description:
+category: Language
+homepage: https://github.com/edemko/nanopass
+bug-reports: https://github.com/edemko/nanopass/issues
+author: Eric Demko
+maintainer: zankoku.okuno@gmail.com
+copyright: 2022 Eric Demko
+license: BSD-3-Clause
+license-file: LICENSE
+extra-source-files: CHANGELOG.md
+
+source-repository head
+  type: git
+  location: https://github.com/edemko/nanopass
+
+library
+  hs-source-dirs: src
+  exposed-modules:
+    Language.Nanopass.LangDef
+  -- other-modules:
+  build-depends:
+    , base >=4.11.1
+    , containers >=0.6
+    , mtl >=2.2
+    , template-haskell >=2.16
+  default-language: Haskell2010
+  ghc-options: -O2 -Wall -Wunticked-promoted-constructors
+
+executable nanopass
+  hs-source-dirs: app
+  main-is: Main.hs
+  other-modules:
+    Lang
+  build-depends:
+    , base
+    , nanopass
+    , pretty-simple
+  default-language: Haskell2010
+  ghc-options: -Wall -O2 -threaded -Wunticked-promoted-constructors
+
+test-suite test
+  hs-source-dirs: test
+  main-is: Main.hs
+  type: exitcode-stdio-1.0
+  build-depends:
+    , nanopass
+    , base
+    -- , quickcheck-classes
+    -- , tasty
+    -- , tasty-hunit
+    -- , tasty-quickcheck
+  default-language: Haskell2010
+  ghc-options: -Wall -O2 -Wunticked-promoted-constructors
+
+benchmark bench
+  hs-source-dirs: bench
+  main-is: Main.hs
+  type: exitcode-stdio-1.0
+  build-depends:
+    , nanopass
+    , base
+    , gauge
+  default-language: Haskell2010
+  ghc-options: -Wall -O2 -Wunticked-promoted-constructors
