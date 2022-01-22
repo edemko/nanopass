@@ -1,31 +1,30 @@
 module Lang where
 
+import Language.Haskell.TH (mkName)
 import Language.Nanopass.LangDef
 
 lang :: LangDef
-lang = LangDef
-  [ ("Expr"
-    , [ CtorDef "Var"
-        [ (Just "x", CtorType "String" [])
-        ]
-      , CtorDef "Lam"
-        [ (Just "x", CtorType "String" [])
-        , (Just "e", ListType (GrammarType "Stmt"))
-        ]
-      , CtorDef "App"
-        [ (Just "f", GrammarType "Expr")
-        , (Just "a", GrammarType "Expr")
-        ]
+lang = LangDef "L0"
+  [ GrammarDef "Expr"
+    [ CtorDef "Var"
+      [ SubtermDef (Just "x") $ CtorType (mkName "String") []
       ]
-    )
-  , ("Stmt"
-    , [ CtorDef "Expr"
-        [ (Nothing, GrammarType "Expr")
-        ]
-      , CtorDef "Let"
-        [ (Just "x", CtorType "String" [])
-        , (Just "e", GrammarType "Expr")
-        ]
+    , CtorDef "Lam"
+      [ SubtermDef (Just "x") $ CtorType (mkName "String") []
+      , SubtermDef (Just "e") $ ListType (GrammarType "Stmt")
       ]
-    )
+    , CtorDef "App"
+      [ SubtermDef (Just "f") $ GrammarType "Expr"
+      , SubtermDef (Just "a") $ GrammarType "Expr"
+      ]
+    ]
+  , GrammarDef "Stmt"
+    [ CtorDef "Expr"
+      [ SubtermDef Nothing $ GrammarType "Expr"
+      ]
+    , CtorDef "Let"
+      [ SubtermDef (Just "x") $ CtorType (mkName "String") []
+      , SubtermDef (Just "e") $ GrammarType "Expr"
+      ]
+    ]
   ]

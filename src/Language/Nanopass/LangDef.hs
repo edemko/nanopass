@@ -1,13 +1,15 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TemplateHaskellQuotes #-}
 
 module Language.Nanopass.LangDef where
 
-import Control.Monad (forM,forM_)
+import Control.Monad (forM,forM_,foldM)
 import Control.Monad.State (StateT,gets,modify,evalStateT)
 import Data.Functor ((<&>))
-import Data.List (nub,(\\))
+import Data.List (nub,(\\),stripPrefix)
 import Data.Map (Map)
-import Language.Haskell.TH (Q, Dec)
+import Language.Haskell.TH (Q, Dec, Exp)
 
 import qualified Control.Monad.Trans as M
 import qualified Data.Map as Map
@@ -15,56 +17,93 @@ import qualified Language.Haskell.TH as TH
 import qualified Language.Haskell.TH.Syntax as TH
 
 
-data LangDef = LangDef [(String, [CtorDef])]
-data CtorDef = CtorDef String [(Maybe String, TypeDesc)]
+---------------------------------
+------ Language Definition ------
+---------------------------------
+
+data LangDef = LangDef
+  { langNameReq :: String
+  , grammarReqs :: [GrammarDef]
+  }
+  deriving(Show)
+data GrammarDef = GrammarDef
+  { grammarNameReq :: String
+  , ctorReqs :: [CtorDef]
+  }
+  deriving(Show)
+data CtorDef = CtorDef
+  { ctorNameReq :: String
+  , subtermReqs :: [SubtermDef]
+  }
+  deriving(Show)
+data SubtermDef = SubtermDef
+  { subtermNameReq :: Maybe String
+  , subtermType :: TypeDesc
+  }
+  deriving(Show)
 data TypeDesc
   = GrammarType String -- these are metavariables that start with a lowercase letter
-  | CtorType String [TypeDesc] -- the string here will be used to look up a type in scope at the splice site, and will start with an uppercase letter
+  | CtorType TH.Name [TypeDesc] -- the string here will be used to look up a type in scope at the splice site, and will start with an uppercase letter
   | ListType TypeDesc -- because otherwise, you'd have to always be saying `type List a = [a]`
   -- TODO tuple types
+  deriving(Show)
 
 type Define a = StateT DefState Q a
 data DefState = DefState
   { annotationType :: TH.Name
-  , nonterminalNames :: Map String TH.Name
+  , grammarNames :: Map String TH.Name
   }
 
-run :: Define a -> Q a
-run = flip evalStateT (DefState (error "use annotation type before init") Map.empty)
+runDefine :: Define a -> Q a
+runDefine = flip evalStateT (DefState (error "use annotation type before init") Map.empty)
 
 
 defineLang :: LangDef -> Define [Dec]
-defineLang (LangDef grammars) = do
-  -- initialize nonterminalNames
-  forM_ (fst <$> grammars) $ \lName -> do
-    knownNames <- gets nonterminalNames
-    case Map.lookup lName knownNames of
+defineLang (LangDef langName grammars) = do
+  -- initialize grammarNames
+  forM_ (grammarNameReq <$> grammars) $ \grammarName -> do
+    knownNames <- gets grammarNames
+    case Map.lookup grammarName knownNames of
       Nothing -> modify $ \st ->
-        st{nonterminalNames = Map.insert lName (TH.mkName lName) knownNames}
+        st{grammarNames = Map.insert grammarName (TH.mkName grammarName) knownNames}
       Just _ -> fail $ concat [ "in a nanopass language definition: "
-                              , "duplicate nonterminal name "
-                              , lName
+                              , "duplicate grammar (terminal/nonterminal) name "
+                              , grammarName
                               ]
-  forM grammars $ \(lName, ctorRequests) -> do
+  -- define a type with one nullary ctor for every grammatical type
+  langInfo <- defineLanginfo langName
+  -- define every nonterminal type
+  types <- forM grammars $ \(GrammarDef grammarName ctorReqs) -> do
     -- create a new type variable for annotations
     annTy <- M.lift (TH.newName "ann")
     modify $ \st -> st{annotationType = annTy}
-    ctors <- defineCtor lName `mapM` ctorRequests
-    pure $ TH.DataD [] (TH.mkName lName) [TH.PlainTV annTy] Nothing
+    ctors <- defineCtor grammarName `mapM` ctorReqs
+    pure $ TH.DataD [] (TH.mkName grammarName) [TH.PlainTV annTy] Nothing
             ctors
             [] -- TODO deriving clauses
+  pure $ langInfo : types
 
-defineCtor :: String -- name of the nonterminal grammar type
+defineLanginfo :: String -> Define Dec
+defineLanginfo langName = do
+  grammarNames <- gets $ Map.toAscList . grammarNames
+  ctors <- forM grammarNames $ \(grammarName, _) -> do
+    pure $ TH.NormalC (TH.mkName $ langName ++ "_" ++ grammarName) []
+  let thName = TH.mkName langName
+      dShow = TH.DerivClause (Just TH.StockStrategy) [TH.ConT ''Show]
+      dRead = TH.DerivClause (Just TH.StockStrategy) [TH.ConT ''Read]
+  pure $ TH.DataD [] thName [] Nothing ctors [dShow, dRead]
+
+defineCtor :: String -- name of the grammar type
             -> CtorDef
             -> Define TH.Con
 defineCtor grammarName (CtorDef termName memberRequests) = do
   members <- sequence $ zip [(1 :: Int)..] memberRequests <&> \case
-    (_, (Just explicitName, v))
+    (_, SubtermDef (Just explicitName) v)
       | explicitName == "annotation" -> fail $ concat [ "in a nanopass language definition: "
                                                       , "a term member cannot be named 'annotation'"
                                                       ]
       | otherwise -> pure (explicitName, v)
-    (i, (Nothing, v)) ->
+    (i, SubtermDef Nothing v) ->
       let gensym = "_" ++ grammarName ++ termName ++ "_" ++ show i
        in pure (gensym, v)
   let duplicateNames = (fst <$> members) \\ nub (fst <$> members)
@@ -82,26 +121,237 @@ defineCtor grammarName (CtorDef termName memberRequests) = do
 defineMember :: (String, TypeDesc) -> Define TH.VarBangType
 defineMember (lName, typeDesc) = do
   ty <- defineArg typeDesc
-  let bang = TH.Bang TH.NoSourceUnpackedness TH.NoSourceStrictness
   pure (TH.mkName lName, noBang, ty)
 
 defineArg :: TypeDesc -> Define TH.Type
 defineArg (GrammarType lName) =
-  gets (Map.lookup lName . nonterminalNames) >>= \case
+  gets (Map.lookup lName . grammarNames) >>= \case
     Just thName -> do
       let grammarCtor = TH.ConT thName
       ann <- TH.VarT <$> gets annotationType
       pure $ TH.AppT grammarCtor ann
     Nothing -> fail $ concat ["in a nanopass language definition: unknown metavariable ", lName]
-defineArg (CtorType hsName argDescs) = do
-  thName <- M.lift (TH.lookupTypeName hsName) >>= \case
-    Just thName -> pure $ TH.ConT thName
-    Nothing -> fail $ concat ["in a nanopass language definition: type name not in scope ", hsName]
+defineArg (CtorType thName argDescs) = do
   args <- defineArg `mapM` argDescs
-  pure $ foldl TH.AppT thName args
+  pure $ foldl TH.AppT (TH.ConT thName) args
 defineArg (ListType argDesc) = do
   arg <- defineArg argDesc
   pure $ TH.AppT TH.ListT arg
 
+----------------------------------
+------ Language Reification ------
+----------------------------------
+
+data DefdLang = DefdLang
+  { langQualPrefix :: String -- module name (including the dot before the basename) as requested in LangMod
+  , thLangName :: TH.Name
+  , defdGrammars :: Map String DefdGrammarType
+  }
+  deriving(Show)
+data DefdGrammarType = DefdGrammarType
+  { thGrammarName :: TH.Name
+  , defdCtors :: Map String DefdCtor
+  }
+  deriving(Show)
+data DefdCtor = DefdCtor
+  { thTermName :: TH.Name
+  , defdArgs :: [DefdSubterm]
+  }
+  deriving(Show)
+data DefdSubterm = DefdSubterm
+  { thSubtermName :: TH.Name
+  , defdSubtermType :: TypeDesc
+  }
+  deriving(Show)
+
+-- given a string, we need to find the language info with that name in scope,
+-- then decode each of the info's constructors into the names of grammar types,
+-- then decode each grammar type
+reifyLang :: String -> Q DefdLang
+reifyLang langName = do
+  (qualThLangName, grammarNames) <- findLangInfo
+  thGrammarTypes <- findGrammarType `mapM` grammarNames
+  grammarTypeList <- forM thGrammarTypes $ \(qualGrammarName, annName, thCtors) -> do
+    ctorList <- decodeCtor annName `mapM` thCtors
+    let ctors = ctorList <&> \ctor -> ((TH.nameBase . thTermName) ctor, ctor)
+        ctorNames = fst <$> ctors
+        duplicateCNames = ctorNames \\ nub ctorNames
+    case duplicateCNames of
+      [] -> pure $ DefdGrammarType qualGrammarName (Map.fromList ctors)
+      _ -> fail $ "corrupt language has duplicate term ctor names: " ++ show (nub duplicateCNames)
+  -- disallowing duplicates here allows `decodeType.recurse` to produce `GrammarType`s easily
+  let grammarTypes = grammarTypeList <&> \t -> ((TH.nameBase . thGrammarName) t, t)
+      grammarNames = fst <$> grammarTypes
+      duplicateGNames = grammarNames \\ nub grammarNames
+  case duplicateGNames of
+    [] -> pure $ DefdLang langQualifier qualThLangName (Map.fromList grammarTypes)
+    _ -> fail $ "corrupt language has duplicate grammar names: " ++ show (nub duplicateGNames)
+  where
+  langQualifier = reverse . dropWhile (/= '.') . reverse $ langName
+  langBase = reverse . takeWhile (/= '.') . reverse $ langName
+  decodeCtor :: TH.Name -> TH.Con -> Q DefdCtor
+  decodeCtor annName (TH.RecC thCtorName thFields) = do
+    thUserFields <- case thFields of
+      ((aName, _, TH.VarT aType):rest)
+        | TH.nameBase aName == "annotation"
+        && annName == aType
+        -> pure rest
+      _ -> fail "corrupt grammar ctor type: lacking an initial annotation field"
+    subterms <- forM thUserFields $ \(thFieldName, _, thSubtermType) -> do
+      typeDesc <- decodeType annName thSubtermType
+      pure $ DefdSubterm thFieldName typeDesc
+    pure $ DefdCtor thCtorName subterms
+  decodeCtor _ otherCtor = fail $ "corrupt grammar ctor type:\n" ++ show otherCtor
+  decodeType :: TH.Name -> TH.Type -> Q TypeDesc
+  decodeType annName type0 = recurse type0
+    where
+    recurse (TH.ConT thName) = pure $ CtorType thName []
+    recurse (TH.AppT (TH.ConT g) (TH.VarT ann)) | ann == annName = do
+      -- we can just use TH.nameBase here, because in reifyLang, we make sure that there are no duplicates
+      -- (there shouldn't be any duplicates anyway as long as language being decoded was generated by this library)
+      pure $ GrammarType (TH.nameBase g)
+    recurse (TH.AppT TH.ListT inner) = ListType <$> recurse inner
+    recurse (TH.AppT inner thLastArg) = do
+      lastArg <- recurse thLastArg
+      recurse inner >>= \case
+        CtorType f args -> pure $ CtorType f (args ++ [lastArg])
+        otherType -> fail $ "corrupt type has kind error applying:\n" ++ show otherType ++ "\nto the argument:\n" ++ show lastArg
+    recurse otherType = fail $ "corrupt subterm type:\n" ++ show otherType ++ "\n in type:\n" ++ show type0
+  findLangInfo :: Q (TH.Name, [TH.Con]) -- name and constructors of the info type
+  findLangInfo = TH.lookupTypeName langName >>= \case
+    Nothing -> fail $ "in a nanopass language extension: could not find base language " ++ langName
+    Just thLangName -> TH.reify thLangName >>= \case
+      TH.TyConI (TH.DataD [] qualThLangName [] Nothing grammarNames _) -> pure (qualThLangName, grammarNames)
+      otherInfo -> fail $ concat
+        [ "in a nanopass language extension: base name " ++ langName ++ " does not identify a language: "
+        , "  expecting language name to identify data definition, but got this type:\n"
+        , "  " ++ show otherInfo
+        ]
+  findGrammarType :: TH.Con -> Q (TH.Name, TH.Name, [TH.Con])
+  findGrammarType (TH.NormalC typePtr []) = do
+    let enumPrefix = langBase ++ "_"
+    typePtrBase <- case stripPrefix enumPrefix (TH.nameBase typePtr) of
+      Just it -> pure it
+      Nothing -> fail $ concat
+        [ "in a nanopass language extension: base name " ++ langBase ++ " does not identify a language: "
+        , "  expecting language enum ctors to start with " ++ enumPrefix ++ ", but got name:\n"
+        , "  " ++ TH.nameBase typePtr
+        ]
+    let typePtr = TH.mkName $ langQualifier ++ typePtrBase
+    TH.reify typePtr >>= \case
+      TH.TyConI (TH.DataD [] qualGrammarName [annTy] _ ctors _) -> do
+        let annName = case annTy of { TH.PlainTV it -> it ; TH.KindedTV it _ -> it }
+        pure (qualGrammarName, annName, ctors)
+      otherType -> fail $ "corrupt language grammar type:\n" ++ show otherType
+  findGrammarType otherCtor = fail $ concat
+    [ "in a nanopass language extension: base name " ++ langName ++ " does not identify a language: "
+    , "  expecting language name to identify an enum, but got this constructor:\n"
+    , "  " ++ show otherCtor
+    ]
+
+-- TODO I'll also need a way to modify a language so that it matches up to (and reuses the data types of) an existing language
+
+--------------------------------
+------ Language Extension ------
+--------------------------------
+
+data LangMod = LangMod
+  { baseLang :: String
+  , newName :: String
+  , grammarMods :: [GrammarMod]
+  }
+  deriving(Show)
+data GrammarMod
+  = AddGrammar GrammarDef
+  | DelGrammar String
+  | ModCtors
+    { grammarName :: String
+    , ctorMods :: [CtorMod]
+    }
+  deriving(Show)
+data CtorMod
+  = AddCtor CtorDef
+  | DelCtor String
+  deriving(Show)
+
+runModify :: LangMod -> Q [Dec]
+runModify lMod = do
+  oldLang <- reifyLang (baseLang lMod)
+  modifyLang oldLang lMod
+
+modifyLang :: DefdLang -> LangMod -> Q [Dec]
+modifyLang defd mods = do
+  defd' <- restrictLang defd (grammarMods mods)
+  -- TODO I think it's at this point that I can generate the default translation
+  lang' <- extendLang defd' mods
+  runDefine $ defineLang lang'
+
+restrictLang :: DefdLang -> [GrammarMod] -> Q DefdLang
+restrictLang = foldM doGrammar
+  where
+  doGrammar :: DefdLang -> GrammarMod -> Q DefdLang
+  doGrammar l (AddGrammar _) = pure l
+  doGrammar l (DelGrammar gName) = case Map.lookup gName (defdGrammars l) of
+    Just _ -> pure $ l{ defdGrammars = Map.delete gName (defdGrammars l) }
+    Nothing -> fail $ concat
+      [ "in nanopass language extention: "
+      , "attempt to delete non-existent grammar type "
+      , gName ++ " from " ++ show (thLangName l)
+      ]
+  doGrammar l (ModCtors gName ctorMods) = case Map.lookup gName (defdGrammars l) of
+    Just grammar -> do
+      grammar' <- foldM doCtors grammar ctorMods
+      pure l{ defdGrammars = Map.insert gName grammar' (defdGrammars l) }
+    Nothing -> fail $ concat
+      [ "in nanopass language extension: "
+      , "attempt to modify non-existent grammar type "
+      , gName ++ " from " ++ show (thLangName l)
+      ]
+    where
+    doCtors :: DefdGrammarType -> CtorMod -> Q DefdGrammarType
+    doCtors g (AddCtor _) = pure g
+    doCtors g (DelCtor cName) = case Map.lookup cName (defdCtors g) of
+      Just _ -> pure $ g{ defdCtors = Map.delete cName (defdCtors g) }
+      Nothing -> fail $ concat
+        [ "in nanopass language extention: "
+        , "attempt to delete non-existent term constructor "
+        , gName ++ " from " ++ show (thGrammarName g) ++ " in " ++ show (thLangName l)
+        ]
+
+extendLang :: DefdLang -> LangMod -> Q LangDef
+extendLang DefdLang{langQualPrefix,defdGrammars} lMods = do
+  grammarReqs0 <- doGrammar (grammarMods lMods) `mapM` Map.elems defdGrammars
+  let grammarReqs = grammarReqs0 ++ catAddGrammars (grammarMods lMods)
+  pure $ LangDef{langNameReq = newName lMods, grammarReqs}
+  where
+  doGrammar :: [GrammarMod] -> DefdGrammarType -> Q GrammarDef
+  doGrammar gMods DefdGrammarType{thGrammarName,defdCtors} = do
+    let ctorReqs0 = doCtor <$> Map.elems defdCtors
+    let ctorReqs = ctorReqs0 ++ catAddCtors thGrammarName gMods
+    pure GrammarDef{grammarNameReq = TH.nameBase thGrammarName, ctorReqs}
+  doCtor :: DefdCtor -> CtorDef
+  doCtor DefdCtor{thTermName, defdArgs} =
+    CtorDef (TH.nameBase thTermName) (doSubterm <$> defdArgs)
+  doSubterm :: DefdSubterm -> SubtermDef
+  doSubterm DefdSubterm{thSubtermName, defdSubtermType} =
+    SubtermDef (Just $ TH.nameBase thSubtermName) defdSubtermType
+  catAddGrammars (AddGrammar g : rest) = g : catAddGrammars rest
+  catAddGrammars (_ : rest) = catAddGrammars rest
+  catAddGrammars [] = []
+  catAddCtors thName (ModCtors toName ctorMods : rest)
+    | toName == TH.nameBase thName = go ctorMods ++ catAddCtors thName rest
+    where
+    go (AddCtor c : rest) = c : go rest
+    go (_ : rest) = go rest
+    go [] = []
+  catAddCtors thName (_ : rest) = catAddCtors thName rest
+  catAddCtors _ [] = []
+
+
+------------------------
+------ TH Helpers ------
+------------------------
+
 noBang :: TH.Bang
 noBang = TH.Bang TH.NoSourceUnpackedness TH.NoSourceStrictness
+

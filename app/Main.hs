@@ -1,24 +1,27 @@
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TemplateHaskell #-}
-
 module Main where
 
-import Lang
 import Language.Nanopass.LangDef
 
 import Text.Pretty.Simple (pPrint)
 
-$(run $ defineLang lang)
+import qualified Lang.TH as L0
+import qualified Lang1.TH as L1
 
-deriving stock instance (Show a) => Show (Expr a)
-deriving stock instance (Show a) => Show (Stmt a)
 
 main :: IO ()
 main = do
-  let theF = Lam () "x"
-            [ Let () "y" $ Var () "x"
-            , Expr () $ Var () "y"
+  let theF = L0.Lam () "x"
+            [ L0.Let () "y" $ L0.Var () "x"
+            , L0.Expr () $ L0.Var () "y"
             ]
-  pPrint $ App () theF (Var () "foo")
+      expr = L0.App () theF (L0.Var () "foo")
+  pPrint expr
+  pPrint $ rewrite expr
+
+
+rewrite :: L0.Expr a -> L1.Expr a
+rewrite (L0.Lam ann x []) = L1.Lam ann x $ L1.Var ann x
+rewrite (L0.Lam ann x (L0.Expr _ e : _)) = L1.Lam ann x $ rewrite e
+rewrite (L0.Lam ann x (L0.Let _ _ e : _)) = L1.Lam ann x $ rewrite e
+rewrite (L0.Var ann x) = L1.Var ann x
+rewrite (L0.App ann f a) = L1.App ann (rewrite f) (rewrite a)
