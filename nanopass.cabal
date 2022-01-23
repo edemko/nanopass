@@ -21,6 +21,8 @@ library
   hs-source-dirs: src
   exposed-modules:
     Language.Nanopass.LangDef
+    Language.Nanopass.QQ
+    Text.Parse.Stupid
   -- other-modules:
   build-depends:
     , base >=4.11.1
@@ -35,9 +37,7 @@ executable nanopass
   main-is: Main.hs
   other-modules:
     Lang
-    Lang.TH
     Lang1
-    Lang1.TH
   build-depends:
     , base
     , nanopass

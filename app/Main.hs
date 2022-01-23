@@ -1,11 +1,9 @@
 module Main where
 
-import Language.Nanopass.LangDef
-
 import Text.Pretty.Simple (pPrint)
 
-import qualified Lang.TH as L0
-import qualified Lang1.TH as L1
+import qualified Lang as L0
+import qualified Lang1 as L1
 
 
 main :: IO ()

@@ -1,30 +1,23 @@
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE StandaloneDeriving #-}
+
 module Lang where
 
-import Language.Haskell.TH (mkName)
-import Language.Nanopass.LangDef
+import Language.Nanopass.QQ (deflang)
 
-lang :: LangDef
-lang = LangDef "L0"
-  [ GrammarDef "Expr"
-    [ CtorDef "Var"
-      [ SubtermDef (Just "x") $ CtorType (mkName "String") []
-      ]
-    , CtorDef "Lam"
-      [ SubtermDef (Just "x") $ CtorType (mkName "String") []
-      , SubtermDef (Just "e") $ ListType (GrammarType "Stmt")
-      ]
-    , CtorDef "App"
-      [ SubtermDef (Just "f") $ GrammarType "Expr"
-      , SubtermDef (Just "a") $ GrammarType "Expr"
-      ]
-    ]
-  , GrammarDef "Stmt"
-    [ CtorDef "Expr"
-      [ SubtermDef Nothing $ GrammarType "Expr"
-      ]
-    , CtorDef "Let"
-      [ SubtermDef (Just "x") $ CtorType (mkName "String") []
-      , SubtermDef (Just "e") $ GrammarType "Expr"
-      ]
-    ]
-  ]
+[deflang| L0
+  (Expr
+    (Var {x String})
+    (Lam {x String} {e (stmt *)})
+    (App {f expr} {a expr})
+  )
+  (Stmt
+    (Expr expr)
+    (Let {x String} {e expr})
+  )
+|]
+deriving stock instance (Show a) => Show (Expr a)
+deriving stock instance (Show a) => Show (Stmt a)

@@ -1,8 +1,13 @@
 {-# LANGUAGE DeriveFunctor #-}
 module Text.Parse.Stupid
-  ( parse
+  ( Sexpr(..)
+  , parse
   , hydrateSpaces
+  , print
   ) where
+
+import Prelude hiding (print)
+
 import Data.Bifunctor (first)
 
 data Sexpr a = Atom a | Combo String [Sexpr a]
@@ -56,3 +61,9 @@ hydrateSpaces ('\"':content) = go content
   go ('\\':'+':rest) = ' ':go rest
   go (c:rest) = c:go rest
 hydrateSpaces str = str
+
+print :: (a -> String) -> Sexpr a -> String
+print f (Atom a) = f a
+print f (Combo open sexprs) = case lookup open brackPairs of
+  Just close -> open ++ unwords (print f <$> sexprs) ++ close
+  Nothing -> errorWithoutStackTrace $ "Text.Parse.Stupid.print: not an open bracket " ++ show open
