@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
 
 module Language.Nanopass.QQ where
@@ -12,7 +13,6 @@ import Language.Haskell.TH (Q, Dec)
 import Language.Haskell.TH.Quote (QuasiQuoter(..))
 import Text.Parse.Stupid (Sexpr(..))
 
-import qualified Data.Char as Char
 import qualified Language.Haskell.TH as TH
 import qualified Text.Parse.Stupid as Stupid
 
@@ -24,16 +24,10 @@ deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
     sexprs <- case Stupid.parse input of
       Just it -> pure it
       Nothing -> fail "syntax error"
-    case sexprs of
-      [] -> fail $ "expecting a langauge name"
-      [_] -> fail $ "expecting one or more grammars"
-      [_,Atom ":->"] -> fail $ "expecting a derived language name"
-      (baseExpr:Atom ":->":newExpr:modExprs) -> case parseLangMod baseExpr newExpr modExprs of
-        Right mod -> runModify mod
-        Left err -> fail err
-      (langName:grammarExprs) -> case parseLangDef langName grammarExprs of
-        Right l -> runDefine $ defineLang l
-        Left err -> fail err
+    case parseDefBaseOrExt sexprs of
+      Right (Left def) -> runDefine $ defineLang def
+      Right (Right mod) -> runModify mod
+      Left err -> fail err
   bad ctx _ = fail $ "`deflang` quasiquoter cannot be used in an " ++ ctx ++ " context,\n\
                      \it can only appear as part of declarations."
 
@@ -41,11 +35,40 @@ deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
 ------ Language Definitions ------
 ----------------------------------
 
-parseLangDef :: Sexpr String -> [Sexpr String] -> Either String LangDef
-parseLangDef nameExpr grammarExprs = do
-  name <- parseLangName nameExpr
-  grammars <- parseGrammar `mapM` grammarExprs
-  pure $ LangDef name grammars
+parseDefBaseOrExt :: [Sexpr String] -> Either String (Either LangDef LangMod)
+parseDefBaseOrExt (langName:Atom ":->":rest) = case rest of
+  (extName:rest') -> case rest' of
+    (candidateParams:rest'') | Right params <- parseParams candidateParams
+      -> Right <$> parseLangMod langName extName params rest''
+    _ -> Right <$> parseLangMod langName extName [] rest'
+  _ -> Left $ "expecting a new language name"
+parseDefBaseOrExt (langName:rest) = case rest of
+  (candidateParams:rest') | Right params <- parseParams candidateParams
+    -> Left <$> parseLangDef langName params rest'
+  _ -> Left <$> parseLangDef langName [] rest
+parseDefBaseOrExt _ = Left $ "expecting a langauge name"
+
+parseParams :: Sexpr String -> Either String [String]
+parseParams (Combo "(" params) = parseParam `mapM` params
+  where
+  parseParam (Atom str) | Just param <- fromLowername str = Right param
+  parseParam other = Left $ "expecting type parameter (lowercase symbol), got: " ++ show other
+parseParams other = Left $ concat
+  [ "expecting parameter list:\n"
+  , "  (<lowercase name…> )\n"
+  , "got:\n"
+  , "  " ++ show other
+  ]
+
+parseLangDef :: Sexpr String -> [String] -> [Sexpr String] -> Either String LangDef
+parseLangDef nameExpr langParamReqs grammarExprs = do
+  langNameReq <- parseLangName nameExpr
+  grammarReqs <- parseGrammar `mapM` grammarExprs
+  pure $ LangDef
+    { langNameReq
+    , langParamReqs
+    , grammarReqs
+    }
 
 parseLangName :: Sexpr String -> Either String String
 parseLangName (Atom str) | Just str' <- fromUpname str = pure str'
@@ -97,9 +120,11 @@ parseSubterm typeEexpr = case parseType typeEexpr of
 
 parseType :: Sexpr String -> Either String TypeDesc
 parseType (Atom str)
-  | Just (c:cs) <- fromLowername str = do
-    let mutrec = Char.toUpper c : cs
-    pure $ GrammarType mutrec
+  | '$':str' <- str
+  , Just mutrec <- fromUpname str'
+    = pure $ GrammarType mutrec
+  | Just tyvar <- fromLowername str
+    = pure $ VarType (TH.mkName tyvar)
   | Just ctorName <- fromUpdotname str = pure $ CtorType (TH.mkName ctorName) []
 parseType (Combo "(" subexprs)
   | Just (innerExpr, modifier) <- fromShortcut subexprs = do
@@ -141,12 +166,17 @@ parseType other = Left $ concat
 ------ Language Extensions ------
 ---------------------------------
 
-parseLangMod :: Sexpr String -> Sexpr String -> [Sexpr String] -> Either String LangMod
-parseLangMod baseExpr newExpr modExprs = do
-  baseName <- parseBaseLangName baseExpr
-  newName <- parseLangName newExpr
+parseLangMod :: Sexpr String -> Sexpr String -> [String] -> [Sexpr String] -> Either String LangMod
+parseLangMod baseExpr newExpr newParams modExprs = do
+  baseLang <- parseBaseLangName baseExpr
+  newLang <- parseLangName newExpr
   modss <- parseGrammarMod `mapM` modExprs
-  pure $ LangMod baseName newName (concat modss)
+  pure $ LangMod
+    { baseLang
+    , newLang
+    , newParams
+    , grammarMods = concat modss
+    } 
 
 parseBaseLangName :: Sexpr String -> Either String String
 parseBaseLangName (Atom str) | Just str' <- fromUpdotname str = pure str'

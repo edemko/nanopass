@@ -8,16 +8,16 @@ module Lang where
 
 import Language.Nanopass.QQ (deflang)
 
-[deflang| L0
+[deflang| L0 (funny)
   (Expr
     (Var {x String})
-    (Lam {x String} {e (stmt *)})
-    (App {f expr} {a expr})
+    (Lam {x String} {e ($Stmt *)})
+    (App {f $Expr} {a $Expr})
   )
   (Stmt
-    (Expr expr)
-    (Let {x String} {e expr})
+    (Expr {delme funny} $Expr)
+    (Let {x String} {e $Expr})
   )
 |]
-deriving stock instance (Show a) => Show (Expr a)
-deriving stock instance (Show a) => Show (Stmt a)
+deriving stock instance (Show funny) => Show (Expr funny)
+deriving stock instance (Show funny) => Show (Stmt funny)

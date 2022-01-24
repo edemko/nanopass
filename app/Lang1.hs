@@ -12,20 +12,8 @@ import qualified Lang as L0
   (*
     (Expr
       (- Lam)
-      (+ Lam {x String} {e expr})
+      (+ Lam {x String} {e $Expr})
     ))
   (- Stmt)
 |]
-deriving stock instance (Show a) => Show (Expr a)
-
--- ext :: LangMod
--- ext = LangMod "L0.L0" "L1"
---   [ ModCtors "Expr"
---     [ DelCtor "Lam"
---     , AddCtor $ CtorDef "Lam"
---       [ SubtermDef (Just "x") $ CtorType (mkName "String") []
---       , SubtermDef (Just "e") $ GrammarType "Expr"
---       ]
---     ]
---   , DelGrammar "Stmt"
---   ]
+deriving stock instance Show Expr
