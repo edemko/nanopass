@@ -14,6 +14,7 @@ import Language.Nanopass.QQ (deflang)
     (Lam {x String} {e ($Stmt *)})
     (App {f $Expr} {a $Expr})
     (Nope String)
+    (UhOh {$Expr $Expr})
   )
   (Stmt
     (Expr {delme funny} $Expr)
