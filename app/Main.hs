@@ -19,21 +19,12 @@ main = do
             [ L0.Let "y" $ L0.Var "x"
             , L0.Expr () $ L0.Var "y"
             ]
-      expr = L0.App theF (L0.Var "foo")
-  pPrint expr
-  pPrint $ compile expr
-
-
-exprDescendA :: (Applicative f) => XlateA funny f -> L0.Expr funny -> f L1.Expr
-exprDescendA xlate l0 = case expr xlate l0 of
-  Just l1 -> l1
-  Nothing -> case l0 of
-    L0.Var x -> L1.Var <$> pure x
-    L0.Lam x e -> exprLam xlate x e
-    L0.App f a -> L1.App <$> exprDescendA xlate f <*> exprDescendA xlate a
+      e = L0.App theF (L0.Var "foo")
+  pPrint e
+  pPrint $ compile e
 
 compile :: L0.Expr () -> L1.Expr
-compile = runIdentity . exprDescendA xlate
+compile = runIdentity . descendExprA xlate
   where
   xlate = XlateA
     { expr = const Nothing

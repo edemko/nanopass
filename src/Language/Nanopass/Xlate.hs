@@ -7,10 +7,11 @@ module Language.Nanopass.Xlate where
 
 import Language.Nanopass.LangDef
 
+import Control.Monad (forM)
 import Data.List (nub)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
-import Language.Haskell.TH (Q,Dec)
+import Language.Haskell.TH (Q,Dec,Exp)
 
 import qualified Data.Char as Char
 import qualified Data.Map as Map
@@ -18,11 +19,12 @@ import qualified Language.Haskell.TH as TH
 
 
 mkXlateA :: DefdLang -> DefdLang -> Q [Dec]
-mkXlateA l1 l2 = xlateDef l1 l2 >>= declareXlate
+mkXlateA l1 l2 = xlateDef l1 l2 >>= declareXlate l1 l2
 
-declareXlate :: XlateDef -> Q [Dec]
-declareXlate xlate = do
-  pure [declareTypeAp xlate]
+declareXlate :: DefdLang -> DefdLang -> XlateDef -> Q [Dec]
+declareXlate l1 l2 xlate = do
+  descendsA <- defineDescendA l1 l2 xlate
+  pure $ declareTypeAp xlate : descendsA
 
 ---------------------------------------------
 ------ Gather Translation Requirements ------
@@ -146,11 +148,94 @@ interpretTypeDesc DefdLang{langQualPrefix,thLangParams} = go
 ------ Declare Descend Functions ------
 ---------------------------------------
 
+defineDescendA :: DefdLang -> DefdLang -> XlateDef -> Q [Dec]
+defineDescendA l1 l2 XlateDef{xlateParams,xlateFParam,xlateOverrides,xlateHoles} = do
+  fmap concat . forM xlateOverrides $ \XlateOverrideDef{grammarName} -> do
+    let funName = TH.mkName $ "descend" ++ grammarName ++ "A"
+    xlateVar <- TH.newName "xlate"
+    termVar <- TH.newName "term"
+    -- define the automatic case matching
+    autoMatches <- case Map.lookup grammarName (defdGrammars l1) of
+      Nothing -> errorWithoutStackTrace $ "nanopass internal error: failed to find a source grammar that appears as an override: " ++ grammarName
+      Just DefdGrammarType{defdCtors} -> do
+        -- go through all the constructors for this grammar type
+        forM (Map.toAscList defdCtors) $ \(_, DefdCtor{thTermName,defdArgs}) -> do
+          let cName = TH.nameBase thTermName
+          args <- (TH.newName . TH.nameBase . thSubtermName) `mapM` defdArgs
+          let pat = TH.ConP thTermName (TH.VarP <$> args)
+          let body = case findHole grammarName cName xlateHoles of
+                -- if this constructor has a hole, call the hole
+                Just _ ->
+                  let f = TH.mkName $ lowerHead grammarName ++ cName
+                      recurse = TH.VarE f `TH.AppE` TH.VarE xlateVar
+                   in foldl TH.AppE recurse (TH.VarE <$> args)
+                -- TODO otherwise, generate a catamorphism
+                Nothing -> 
+                  let e0 = TH.VarE 'pure `TH.AppE` TH.ConE (TH.mkName $ langQualPrefix l2 ++ cName)
+                      iAppE a b = TH.InfixE (Just a) (TH.VarE '(<*>)) (Just b)
+                      es = zipWith (descendCata xlateVar) args (defdSubtermType <$> defdArgs)
+                   in foldl iAppE e0 es
+                -- TH.VarE (TH.mkName "undefined")
+          pure $ TH.Match pat (TH.NormalB body) []
+    let autoBody = TH.CaseE (TH.VarE termVar) autoMatches
+    -- define the case match on the result of the override
+    termVar' <- TH.newName "term"
+    let override = TH.VarE (TH.mkName $ lowerHead grammarName)
+                   `TH.AppE` (TH.VarE xlateVar)
+                   `TH.AppE` (TH.VarE termVar)
+        ovrMatches =
+          [ TH.Match (TH.ConP 'Just [TH.VarP termVar']) (TH.NormalB $ TH.VarE termVar') []
+          , TH.Match (TH.ConP 'Nothing []) (TH.NormalB autoBody) []
+          ]
+    -- tie it all together
+    let body = TH.CaseE override ovrMatches
+    let clause = TH.Clause [TH.VarP xlateVar, TH.VarP termVar] (TH.NormalB body) []
+    -- generate a type signature
+    let quantifier = TH.PlainTV <$> xlateParams ++ [xlateFParam]
+        appClass = TH.ConT ''Applicative `TH.AppT` TH.VarT xlateFParam
+        xlateArgTyCon = TH.ConT $ TH.mkName "XlateA"
+        xlateArgTy = foldl TH.AppT xlateArgTyCon (TH.VarT <$> xlateParams ++ [xlateFParam])
+        l1ArgTyCon = TH.ConT $ TH.mkName $ langQualPrefix l1 ++ grammarName
+        l1ArgTy = foldl TH.AppT l1ArgTyCon (TH.VarT <$> thLangParams l1)
+        l2ResTyCon = TH.ConT $ TH.mkName $ langQualPrefix l2 ++ grammarName
+        l2ResTyCore = foldl TH.AppT l2ResTyCon (TH.VarT <$> thLangParams l2)
+        l2ResTy = TH.AppT (TH.VarT xlateFParam) l2ResTyCore
+        funT a b = TH.AppT (TH.AppT TH.ArrowT a) b
+        sigType = xlateArgTy `funT` (l1ArgTy `funT` l2ResTy)
+    -- and emit both signature and definition
+    pure
+      [ TH.SigD funName $ TH.ForallT quantifier [appClass] sigType
+      , TH.FunD funName [clause]
+      ]
+
+descendCata :: TH.Name -> TH.Name -> TypeDesc -> Exp
+descendCata _ argVar t0
+  | not (containsGrammar t0) = TH.VarE 'pure `TH.AppE` TH.VarE argVar
+descendCata xlateVar argVar (GrammarType gName) =
+  let recName = TH.mkName $ "descend" ++ gName ++ "A"
+   in TH.VarE recName `TH.AppE` TH.VarE xlateVar `TH.AppE` TH.VarE argVar
 
 ---------------------
 ------ Helpers ------
 ---------------------
 
+containsGrammar :: TypeDesc -> Bool
+containsGrammar (GrammarType _) = True
+containsGrammar (VarType _) = False
+containsGrammar (CtorType _ ts) = any containsGrammar ts
+containsGrammar (ListType t) = containsGrammar t
+containsGrammar (MaybeType t) = containsGrammar t
+containsGrammar (NonEmptyType t) = containsGrammar t
+containsGrammar (TupleType t1 t2 ts) = any containsGrammar (t1:t2:ts)
+containsGrammar (AlistType t1 t2) = containsGrammar t1 || containsGrammar t2
+containsGrammar (MapType t1 t2) = containsGrammar t1 || containsGrammar t2
+
+findHole :: String -> String -> [XlateHoleDef] -> Maybe XlateHoleDef
+findHole gName cName holes = case filter f holes of
+  [] -> Nothing
+  x:_ -> Just x
+  where
+  f XlateHoleDef{grammarName,ctorName} = grammarName == gName && ctorName == cName
 
 lowerHead :: String -> String
 lowerHead [] = []
