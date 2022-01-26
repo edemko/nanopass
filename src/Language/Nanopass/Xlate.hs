@@ -181,10 +181,6 @@ interpretTypeDesc DefdLang{langQualPrefix,thLangParams} = go
         thTup = TH.TupleT tupLen
         tys = go <$> (t1:t2:ts)
      in foldl AppT thTup tys
-  go (AlistType kDesc vDesc) =
-    let k = go kDesc
-        v = go vDesc
-     in AppT TH.ListT $ AppT (AppT (TH.TupleT 2) k) v
   go (MapType kDesc vDesc) = do
     let m = TH.ConT ''Map
         k = go kDesc
@@ -273,7 +269,6 @@ containsGrammar (ListType t) = containsGrammar t
 containsGrammar (MaybeType t) = containsGrammar t
 containsGrammar (NonEmptyType t) = containsGrammar t
 containsGrammar (TupleType t1 t2 ts) = any containsGrammar (t1:t2:ts)
-containsGrammar (AlistType t1 t2) = containsGrammar t1 || containsGrammar t2
 containsGrammar (MapType t1 t2) = containsGrammar t1 || containsGrammar t2
 
 findAuto :: String -> String -> [Either XlateHoleDef XlateAuto] -> Maybe (Either XlateHoleDef XlateAuto)

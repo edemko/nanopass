@@ -137,7 +137,7 @@ parseType (Combo "[" subexprs)
   | Just (lhsExpr, rhsExpr) <- fromMapType subexprs = do
     lhs <- parseType lhsExpr
     rhs <- parseType rhsExpr
-    pure $ AlistType lhs rhs
+    pure $ ListType (TupleType lhs rhs [])
 parseType (Combo "{" subexprs)
   | Just (lhsExpr, rhsExpr) <- fromMapType subexprs = do
     lhs <- parseType lhsExpr

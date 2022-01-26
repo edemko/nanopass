@@ -53,7 +53,6 @@ data TypeDesc
   | MaybeType TypeDesc
   | NonEmptyType TypeDesc
   | TupleType TypeDesc TypeDesc [TypeDesc]
-  | AlistType TypeDesc TypeDesc
   | MapType TypeDesc TypeDesc
   deriving(Eq,Show)
 
@@ -167,10 +166,6 @@ defineArg (TupleType t1 t2 ts) = do
       thTup = TH.TupleT tupLen
   tys <- defineArg `mapM` (t1:t2:ts)
   pure $ foldl TH.AppT thTup tys
-defineArg (AlistType kDesc vDesc) = do
-  k <- defineArg kDesc
-  v <- defineArg vDesc
-  pure $ TH.AppT TH.ListT $ TH.AppT (TH.AppT (TH.TupleT 2) k) v
 defineArg (MapType kDesc vDesc) = do
   m <- M.lift [t|Map|]
   k <- defineArg kDesc
@@ -274,8 +269,6 @@ reifyLang langName = do
       t2Desc <- recurse t2
       tDescs <- recurse `mapM` ts
       pure $ TupleType t1Desc t2Desc tDescs
-    recurse (TH.AppT TH.ListT (TH.AppT (TH.AppT (TH.TupleT 2) k) v))
-      = AlistType <$> recurse k <*> recurse v
     recurse (TH.AppT (TH.AppT (TH.ConT special) k) v)
       | special == ''Map = MapType <$> recurse k <*> recurse v
     recurse (TH.AppT (TH.ConT special) a)
