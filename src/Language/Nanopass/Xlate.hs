@@ -43,7 +43,7 @@ data XlateDef = XlateDef
   , xlateGrammars :: [XlateGrammarDef]
     -- ^ information about the grammars shared by both source and target
     -- this is used to allow users to override the bahavior of automatic translation
-  , xlateCtors :: [Either XlateHoleDef XlateAuto]
+  , xlateCtors :: [Either XlateHoleDef XlateAuto] -- FIXME these should go under xlateGrammars
     -- ^ information about the type constructors in teh source that are missing in the target
     -- this is so that we require the user to supply these in an Xlate type
   }
@@ -118,13 +118,26 @@ detectOverrides fParam l1 l2 (gName, _) = case Map.lookup gName (defdGrammars l2
      in [XlateGrammarDef{grammarName = gName,fromType,toType}]
 
 createAuto :: TypeDesc -> MaybeT Q (TH.Name -> TH.Name -> Exp)
-createAuto t0 | not (containsGrammar t0) = do
-  let auto _ argVar = VarE 'pure `AppE` VarE argVar
-  pure auto
 createAuto (GrammarType gName) = do
   let recName = TH.mkName $ "descend" ++ gName ++ "A"
       auto xlateVar argVar = VarE recName `AppE` VarE xlateVar `AppE` VarE argVar
   pure auto
+createAuto (VarType _) = do
+  let auto _ argVar = VarE 'pure `AppE` VarE argVar
+  pure auto
+createAuto (CtorType tyName ts)
+  | all (not . containsGrammar) ts = do
+    let auto _ argVar = VarE 'pure `AppE` VarE argVar
+    pure auto
+  | t:ts' <- reverse ts
+  , all (not . containsGrammar) ts' = do
+      isTraversable <- M.lift $ TH.isInstance ''Traversable [TH.ConT tyName]
+      if isTraversable then traversableAuto t else hoistNothing
+  -- TODO maybe try bitraversable
+  | otherwise = hoistNothing
+createAuto (ListType t) = traversableAuto t
+createAuto (MaybeType t) = traversableAuto t
+createAuto (NonEmptyType t) = traversableAuto t
 createAuto (TupleType t1 t2 ts) = do
   tupleMaker <- do
     tVars <- forM [1..length (t1:t2:ts)] $ \i -> M.lift $ TH.newName ("t" ++ show i)
@@ -139,11 +152,19 @@ createAuto (TupleType t1 t2 ts) = do
               foldl idiomAppE (AppE (VarE 'pure) tupleMaker) (zipWith elemAuto autos' args')
          in lam `AppE` VarE argVar
   pure auto
+createAuto (MapType k v)
+  | not (containsGrammar k) = traversableAuto v
+  | otherwise = hoistNothing
 
+traversableAuto :: TypeDesc -> MaybeT Q (TH.Name -> TH.Name -> Exp)
+traversableAuto t = do
+  var <- M.lift $ TH.newName "x"
+  auto' <- createAuto t
+  let auto xlateVar argVar =
+        let lam = TH.LamE [TH.VarP var] (auto' xlateVar var)
+         in VarE 'traverse `AppE` lam `AppE` VarE argVar
+  pure auto
 
--- pure (\(t1, t2) -> (t1, t2))
---  <*> (descendExprA xlate) a1
---  <*> (descendExprA xlate) a2
 
 ---------------------------------
 ------ Declare XLate Types ------
@@ -284,5 +305,5 @@ lowerHead :: String -> String
 lowerHead [] = []
 lowerHead (c:cs) = Char.toLower c : cs
 
-nothing :: Monad m => MaybeT m a
-nothing = MaybeT $ pure Nothing
+hoistNothing :: Monad m => MaybeT m a
+hoistNothing = MaybeT $ pure Nothing

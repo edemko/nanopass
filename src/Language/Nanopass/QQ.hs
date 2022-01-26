@@ -23,7 +23,7 @@ deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
   go input = do
     sexprs <- case Stupid.parse input of
       Just it -> pure it
-      Nothing -> fail "syntax error"
+      Nothing -> fail "sexpr syntax error"
     case parseDefBaseOrExt sexprs of
       Right (Left def) -> runDefine $ defineLang def
       Right (Right mod) -> runModify mod

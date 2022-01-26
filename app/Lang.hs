@@ -6,6 +6,7 @@
 
 module Lang where
 
+import Data.Monoid (First)
 import Language.Nanopass.QQ (deflang)
 
 [deflang| L0 (funny)
@@ -14,7 +15,7 @@ import Language.Nanopass.QQ (deflang)
     (Lam {x String} {e ($Stmt *)})
     (App {f $Expr} {a $Expr})
     (Nope String)
-    (UhOh {$Expr $Expr})
+    (UhOh {(First $Expr *) ($Expr *)})
   )
   (Stmt
     (Expr {delme funny} $Expr)
