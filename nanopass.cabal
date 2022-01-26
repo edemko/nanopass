@@ -22,6 +22,7 @@ library
   exposed-modules:
     Language.Nanopass.LangDef
     Language.Nanopass.QQ
+    Language.Nanopass.Xlate
     Text.Parse.Stupid
   -- other-modules:
   build-depends:

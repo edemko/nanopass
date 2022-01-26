@@ -55,7 +55,7 @@ data TypeDesc
   | TupleType TypeDesc TypeDesc [TypeDesc]
   | AlistType TypeDesc TypeDesc
   | MapType TypeDesc TypeDesc
-  deriving(Show)
+  deriving(Eq,Show)
 
 type Define a = StateT DefState Q a
 data DefState = DefState

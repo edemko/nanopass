@@ -13,6 +13,7 @@ import qualified Lang as L0
     (Expr
       (- Lam)
       (+ Lam {x String} {e $Expr})
+      (- Nope)
     ))
   (- Stmt)
 |]
