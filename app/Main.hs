@@ -1,17 +1,31 @@
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Main where
 
+import Data.Functor.Identity
+
+import Language.Nanopass.QQ (deflang,defpass)
 import Text.Pretty.Simple (pPrint)
 
-import Language.Nanopass.Xlate
-import Data.Functor.Identity
-import Language.Nanopass.LangDef
-
 import qualified Lang as L0
-import qualified Lang1 as L1
 
-$(do { l1 <- reifyLang "L0.L0" ; l2 <- reifyLang "L1.L1" ; mkXlateA l1 l2 })
+[deflang| L0.L0 :-> L1
+  (*
+    (Expr
+      (- Lam)
+      (+ Lam {x String} {e $Expr})
+      (- Nope)
+    ))
+  (- Stmt)
+|]
+deriving stock instance Show Expr
+
+$(pure [])
+
+[defpass|L0.L0 :-> L1|]
 
 main :: IO ()
 main = do
@@ -19,18 +33,18 @@ main = do
             [ L0.Let "y" $ L0.Var "x"
             , L0.Expr () $ L0.Var "y"
             ]
-      e = L0.App theF (L0.Var "foo")
-  pPrint e
-  pPrint $ compile e
+      theE = L0.App theF (L0.Var "foo")
+  pPrint theE
+  pPrint $ compile theE
 
-compile :: L0.Expr () -> L1.Expr
+compile :: L0.Expr () -> Expr
 compile = runIdentity . descendExprA xlate
   where
   xlate = XlateA
     { expr = const Nothing
-    , exprLam = \x body -> pure $ case body of
-        [] -> L1.Lam x $ L1.Var x
-        L0.Expr () e : _ -> L1.Lam x $ compile e
-        L0.Let _ e : _ -> L1.Lam x $ compile e
-    , exprNope = \x -> pure $ L1.Var x
+    , exprLam = \var body -> pure $ case body of
+        [] -> Lam var $ Var var
+        L0.Expr () e1 : _ -> Lam var $ compile e1
+        L0.Let _ body1 : _ -> Lam var $ compile body1
+    , exprNope = pure . Var
     }

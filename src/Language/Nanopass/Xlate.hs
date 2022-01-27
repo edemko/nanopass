@@ -5,7 +5,15 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Language.Nanopass.Xlate where
+module Language.Nanopass.Xlate
+  ( mkXlateA
+  , declareXlate
+  , XlateDef(..)
+  , XlateProd
+  , XlateAuto(..)
+  , XlateHoleDef(..)
+  , XlateSyncatDef(..)
+  ) where
 
 import Language.Nanopass.LangDef
 
@@ -282,6 +290,9 @@ pattern ArrT a b = AppT (AppT TH.ArrowT a) b
 
 idiomAppE :: Exp -> Exp -> Exp
 idiomAppE a b = TH.InfixE (Just a) (VarE '(<*>)) (Just b)
+
+noBang :: TH.Bang
+noBang = TH.Bang TH.NoSourceUnpackedness TH.NoSourceStrictness
 
 containsGrammar :: TypeDesc -> Bool
 containsGrammar (RecursiveType _) = True

@@ -3,7 +3,26 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE TemplateHaskellQuotes #-}
 
-module Language.Nanopass.LangDef where
+module Language.Nanopass.LangDef
+  ( TypeDesc(..)
+  , LangDef(..)
+  , SyncatDef(..)
+  , ProdDef(..)
+  , SubtermDef(..)
+  , Define
+  , runDefine
+  , defineLang
+  , DefdLang(..)
+  , DefdSyncatType(..)
+  , DefdProd(..)
+  , DefdSubterm(..)
+  , reifyLang
+  , LangMod(..)
+  , SyncatMod(..)
+  , ProdMod(..)
+  , runModify
+  , modifyLang
+  ) where
 
 import Control.Monad (forM,forM_,foldM,when)
 import Control.Monad.State (StateT,gets,modify,evalStateT)
@@ -442,4 +461,3 @@ extendLang l lMods = do
 
 noBang :: TH.Bang
 noBang = TH.Bang TH.NoSourceUnpackedness TH.NoSourceStrictness
-

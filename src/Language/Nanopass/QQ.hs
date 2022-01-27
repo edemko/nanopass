@@ -2,16 +2,22 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
 
-module Language.Nanopass.QQ where
+module Language.Nanopass.QQ
+  ( deflang
+  , defpass
+  ) where
 
 import Data.Char
 import Language.Nanopass.LangDef
 import Prelude hiding (mod)
 
+
 import Control.Monad (forM)
 import Language.Haskell.TH (Q, Dec)
 import Language.Haskell.TH.Quote (QuasiQuoter(..))
+import Language.Nanopass.Xlate (mkXlateA)
 import Text.Parse.Stupid (Sexpr(..))
+
 
 import qualified Language.Haskell.TH as TH
 import qualified Text.Parse.Stupid as Stupid
@@ -28,10 +34,31 @@ deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
       Right (Left def) -> runDefine $ defineLang def
       Right (Right mod) -> runModify mod
       Left err -> fail err
-  bad ctx _ = fail $ "`deflang` quasiquoter cannot be used in an " ++ ctx ++ " context,\n\
+  bad ctx _ = fail $ "`deflang` quasiquoter cannot be used in a " ++ ctx ++ " context,\n\
                      \it can only appear as part of declarations."
 
--- TODO defpass
+
+defpass :: QuasiQuoter
+defpass = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
+  where
+  go input = do
+    sexprs <- case Stupid.parse input of
+      Just it -> pure it
+      Nothing -> fail "sexpr syntax error"
+    case parseDefPass sexprs of
+      Right (l1Name, l2Name) -> do
+        l1 <- reifyLang l1Name
+        l2 <- reifyLang l2Name
+        mkXlateA l1 l2
+      Left err -> fail err
+  bad ctx _ = fail $ "`defpass` quasiquoter cannot be used in a " ++ ctx ++ "context,\n\
+                     \it can only appear as part of declarations."
+  parseDefPass :: [Sexpr String] -> Either String (String, String)
+  parseDefPass [Atom l1, Atom ":->", Atom l2]
+    | Just l1Name <- fromUpdotname l1
+    , Just l2Name <- fromUpdotname l2
+      = Right (l1Name, l2Name)
+  parseDefPass _ = Left "expecting two language names, separated by :->"
 
 ----------------------------------
 ------ Language Definitions ------

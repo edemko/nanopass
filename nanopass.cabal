@@ -20,6 +20,7 @@ source-repository head
 library
   hs-source-dirs: src
   exposed-modules:
+    Language.Nanopass
     Language.Nanopass.LangDef
     Language.Nanopass.QQ
     Language.Nanopass.Xlate
@@ -39,7 +40,6 @@ executable nanopass
   main-is: Main.hs
   other-modules:
     Lang
-    Lang1
   build-depends:
     , base
     , nanopass
