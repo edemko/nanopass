@@ -143,7 +143,7 @@ createAuto (CtorType tyName ts)
   , all (not . containsGrammar) ts' = do
       isTraversable <- M.lift $ TH.isInstance ''Traversable [TH.ConT tyName]
       if isTraversable then traversableAuto t else hoistNothing
-  -- TODO maybe try bitraversable
+  -- TODO maybe try Bitraversable
   | otherwise = hoistNothing
 createAuto (ListType t) = traversableAuto t
 createAuto (MaybeType t) = traversableAuto t
