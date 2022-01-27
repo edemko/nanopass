@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE TemplateHaskellQuotes #-}
 
 module Language.Nanopass.LangDef where
@@ -17,36 +18,9 @@ import Language.Haskell.TH (Q, Dec)
 import qualified Control.Monad.Trans as M
 import qualified Data.Map as Map
 import qualified Language.Haskell.TH as TH
-import qualified Language.Haskell.TH.Syntax as TH
 
-
----------------------------------
------- Language Definition ------
----------------------------------
-
-data LangDef = LangDef
-  { langNameReq :: String
-  , langParamReqs :: [String]
-  , grammarReqs :: [GrammarDef]
-  }
-  deriving(Show)
-data GrammarDef = GrammarDef
-  { grammarNameReq :: String
-  , ctorReqs :: [CtorDef]
-  }
-  deriving(Show)
-data CtorDef = CtorDef
-  { ctorNameReq :: String
-  , subtermReqs :: [SubtermDef]
-  }
-  deriving(Show)
-data SubtermDef = SubtermDef
-  { subtermNameReq :: Maybe String
-  , subtermType :: TypeDesc
-  }
-  deriving(Show)
 data TypeDesc
-  = GrammarType String -- these are metavariables that start with a lowercase letter
+  = RecursiveType String -- these are metavariables that start with a lowercase letter
   | VarType TH.Name
   | CtorType TH.Name [TypeDesc] -- the string here will be used to look up a type in scope at the splice site, and will start with an uppercase letter
   | ListType TypeDesc -- because otherwise, you'd have to always be saying `type List a = [a]`
@@ -56,10 +30,36 @@ data TypeDesc
   | MapType TypeDesc TypeDesc
   deriving(Eq,Show)
 
+---------------------------------
+------ Language Definition ------
+---------------------------------
+
+data LangDef = LangDef
+  { langNameReq :: String
+  , langParamReqs :: [String]
+  , syncatReqs :: [SyncatDef]
+  }
+  deriving(Show)
+data SyncatDef = SyncatDef
+  { syncatNameReq :: String
+  , productionReqs :: [ProdDef]
+  }
+  deriving(Show)
+data ProdDef = ProdDef
+  { prodNameReq :: String
+  , subtermReqs :: [SubtermDef]
+  }
+  deriving(Show)
+data SubtermDef = SubtermDef
+  { subtermNameReq :: Maybe String
+  , subtermTypeReq :: TypeDesc
+  }
+  deriving(Show)
+
 type Define a = StateT DefState Q a
 data DefState = DefState
   { langTyvars :: [TH.Name]
-  , grammarNames :: Map String TH.Name
+  , syncatNames :: Map String TH.Name
   }
 
 runDefine :: Define a -> Q a
@@ -67,109 +67,108 @@ runDefine = flip evalStateT st0
   where
   st0 = DefState
     { langTyvars = errorWithoutStackTrace "internal nanopass error: uninitialized langTyVars"
-    , grammarNames = Map.empty
+    , syncatNames = Map.empty
     }
 
-
 defineLang :: LangDef -> Define [Dec]
-defineLang LangDef{langNameReq,langParamReqs,grammarReqs} = do
+defineLang l = do
   -- initialize language type variables
-  let duplicateParams = langParamReqs \\ nub langParamReqs
+  let duplicateParams = l.langParamReqs \\ nub l.langParamReqs
   if not (null duplicateParams)
     then fail $ concat
       [ "in a nanopass language definition: "
-      , "duplicate type parameter names "
+      , "duplicate language parameter names "
       , show (nub duplicateParams)
       ]
-    else modify $ \st -> st{ langTyvars = TH.mkName <$> langParamReqs }
-  -- initialize grammarNames
-  forM_ (grammarNameReq <$> grammarReqs) $ \grammarName -> do
-    knownNames <- gets grammarNames
-    case Map.lookup grammarName knownNames of
+    else modify $ \st -> st{ langTyvars = TH.mkName <$> l.langParamReqs }
+  -- initialize syncatNames
+  forM_ (syncatNameReq <$> l.syncatReqs) $ \syncatReq -> do
+    knownNames <- gets syncatNames
+    case Map.lookup syncatReq knownNames of
       Nothing -> modify $ \st ->
-        st{grammarNames = Map.insert grammarName (TH.mkName grammarName) knownNames}
+        st{syncatNames = Map.insert syncatReq (TH.mkName syncatReq) knownNames}
       Just _ -> fail $ concat [ "in a nanopass language definition: "
-                              , "duplicate grammar (terminal/nonterminal) name "
-                              , grammarName
+                              , "duplicate syntactic category (terminal/nonterminal) name "
+                              , syncatReq
                               ]
   -- define a type with one nullary ctor for every grammatical type
-  langInfo <- defineLanginfo langNameReq
+  langInfo <- defineLanginfo l.langNameReq
   -- define every nonterminal type
-  params <- gets (fmap TH.PlainTV . langTyvars)
-  types <- forM grammarReqs $ \(GrammarDef grammarName ctorReqs) -> do
-    ctors <- defineCtor `mapM` ctorReqs
-    pure $ TH.DataD [] (TH.mkName grammarName) params Nothing
-            ctors
+  params <- gets langTyvars <&> \tvs -> tvs <&> \tv -> TH.PlainTV tv ()
+  syncatTypeDecs <- forM l.syncatReqs $ \syn -> do
+    prodCtors <- defineProduction `mapM` syn.productionReqs
+    pure $ TH.DataD [] (TH.mkName syn.syncatNameReq) params Nothing
+            prodCtors
             []
-  pure $ langInfo : types
+  pure $ langInfo : syncatTypeDecs
 
 defineLanginfo :: String -> Define Dec
 defineLanginfo langName = do
-  grammarNames <- gets $ Map.toAscList . grammarNames
-  ctors <- forM grammarNames $ \(grammarName, _) -> do
-    pure $ TH.NormalC (TH.mkName $ langName ++ "_" ++ grammarName) []
+  syncatNames <- gets $ Map.toAscList . syncatNames
+  ctors <- forM syncatNames $ \(syncatName, _) -> do
+    pure $ TH.NormalC (TH.mkName $ langName ++ "_" ++ syncatName) []
   let thName = TH.mkName langName
       -- I'm not sure I need these singe this type is just a glorified set of pointers, but here they are for reference
       -- dShow = TH.DerivClause Nothing [TH.ConT ''Show]
       -- dRead = TH.DerivClause Nothing [TH.ConT ''Read]
   pure $ TH.DataD [] thName [] Nothing ctors []
 
-defineCtor :: CtorDef -> Define TH.Con
-defineCtor (CtorDef termName memberRequests) = do
-  let members = memberRequests <&> \case
+defineProduction :: ProdDef -> Define TH.Con
+defineProduction production = do
+  let members = production.subtermReqs <&> \case
         SubtermDef (Just explicitName) v -> (explicitName, v)
-        SubtermDef Nothing v -> ("un" ++ termName, v)
+        SubtermDef Nothing v -> ("un" ++ production.prodNameReq, v)
   let duplicateNames = (fst <$> members) \\ nub (fst <$> members)
   fields <- case duplicateNames of
-    [] -> mapM defineMember members
+    [] -> mapM defineSubterm members
     _ -> fail $ concat [ "in a nanopass language definition: "
-                       , "the following members were defined more than once in a term constructor"
+                       , "the following subterms were defined more than once in a production"
                        , show (nub duplicateNames)
                        ]
-  pure $ TH.RecC (TH.mkName termName) fields
+  pure $ TH.RecC (TH.mkName production.prodNameReq) fields
 
-defineMember :: (String, TypeDesc) -> Define TH.VarBangType
-defineMember (lName, typeDesc) = do
-  ty <- defineArg typeDesc
-  pure (TH.mkName lName, noBang, ty)
+defineSubterm :: (String, TypeDesc) -> Define TH.VarBangType
+defineSubterm (langName, typeDesc) = do
+  ty <- subtermType typeDesc
+  pure (TH.mkName langName, noBang, ty)
 
-defineArg :: TypeDesc -> Define TH.Type
-defineArg (GrammarType lName) =
-  gets (Map.lookup lName . grammarNames) >>= \case
+subtermType :: TypeDesc -> Define TH.Type
+subtermType (RecursiveType lName) =
+  gets (Map.lookup lName . syncatNames) >>= \case
     Just thName -> do
       let grammarCtor = TH.ConT thName
       params <- gets $ fmap TH.VarT . langTyvars
       pure $ foldl TH.AppT grammarCtor params
       -- pure $ TH.AppT grammarCtor params
     Nothing -> fail $ concat ["in a nanopass language definition: unknown metavariable ", lName]
-defineArg (VarType vName) =
+subtermType (VarType vName) =
   gets ((vName `elem`) . langTyvars) >>= \case
     True -> do
       pure $ TH.VarT vName
     False -> fail $ concat ["in a nanopass language definition: unknown langauge parameter ", show vName]
-defineArg (CtorType thName argDescs) = do
-  args <- defineArg `mapM` argDescs
+subtermType (CtorType thName argDescs) = do
+  args <- subtermType `mapM` argDescs
   pure $ foldl TH.AppT (TH.ConT thName) args
-defineArg (ListType argDesc) = do
-  arg <- defineArg argDesc
+subtermType (ListType argDesc) = do
+  arg <- subtermType argDesc
   pure $ TH.AppT TH.ListT arg
-defineArg (NonEmptyType argDesc) = do
+subtermType (NonEmptyType argDesc) = do
   neType <- M.lift [t|NonEmpty|]
-  arg <- defineArg argDesc
+  arg <- subtermType argDesc
   pure $ TH.AppT neType arg
-defineArg (MaybeType argDesc) = do
+subtermType (MaybeType argDesc) = do
   maybeType <- M.lift [t|Maybe|]
-  arg <- defineArg argDesc
+  arg <- subtermType argDesc
   pure $ TH.AppT maybeType arg
-defineArg (TupleType t1 t2 ts) = do
+subtermType (TupleType t1 t2 ts) = do
   let tupLen = 2 + length ts
       thTup = TH.TupleT tupLen
-  tys <- defineArg `mapM` (t1:t2:ts)
+  tys <- subtermType `mapM` (t1:t2:ts)
   pure $ foldl TH.AppT thTup tys
-defineArg (MapType kDesc vDesc) = do
+subtermType (MapType kDesc vDesc) = do
   m <- M.lift [t|Map|]
-  k <- defineArg kDesc
-  v <- defineArg vDesc
+  k <- subtermType kDesc
+  v <- subtermType vDesc
   pure $ TH.AppT (TH.AppT m k) v
 
 ----------------------------------
@@ -178,23 +177,23 @@ defineArg (MapType kDesc vDesc) = do
 
 data DefdLang = DefdLang
   { langQualPrefix :: String -- module name (including the dot before the basename) as requested in LangMod
-  , thLangName :: TH.Name
-  , thLangParams :: [TH.Name]
-  , defdGrammars :: Map String DefdGrammarType
+  , defdLangName :: TH.Name
+  , defdLangParams :: [TH.Name]
+  , defdSyncats :: Map String DefdSyncatType
   }
   deriving(Show)
-data DefdGrammarType = DefdGrammarType
-  { thGrammarName :: TH.Name
-  , defdCtors :: Map String DefdCtor
+data DefdSyncatType = DefdSyncatType
+  { defdSyncatName :: TH.Name
+  , defdProds :: Map String DefdProd
   }
   deriving(Show)
-data DefdCtor = DefdCtor
-  { thTermName :: TH.Name
-  , defdArgs :: [DefdSubterm]
+data DefdProd = DefdProd
+  { defdProdName :: TH.Name
+  , defdSubterms :: [DefdSubterm]
   }
   deriving(Show)
 data DefdSubterm = DefdSubterm
-  { thSubtermName :: TH.Name
+  { defdSubtermName :: TH.Name
   , defdSubtermType :: TypeDesc
   }
   deriving(Show)
@@ -204,42 +203,45 @@ data DefdSubterm = DefdSubterm
 -- then decode each grammar type
 reifyLang :: String -> Q DefdLang
 reifyLang langName = do
-  (thLangName, grammarPtrs) <- findLangInfo
+  (defdLangName, syncatPtrs) <- findLangInfo
   -- determine the language's grammar types
-  thGrammarTypes <- findGrammarType `mapM` grammarPtrs
-  let gNames = thGrammarTypes <&> \(qualGName, _, _) -> qualGName
-  grammarTypeList <- forM thGrammarTypes $ \(qualGrammarName, paramNames, thCtors) -> do
-    ctorList <- decodeCtor gNames paramNames `mapM` thCtors
-    let ctors = ctorList <&> \ctor -> ((TH.nameBase . thTermName) ctor, ctor)
-        ctorNames = fst <$> ctors
-        duplicateCNames = ctorNames \\ nub ctorNames
-    case duplicateCNames of
-      [] -> pure $ DefdGrammarType qualGrammarName (Map.fromList ctors)
-      _ -> fail $ "corrupt language has duplicate term ctor names: " ++ show (nub duplicateCNames)
-  -- disallowing duplicates here allows `decodeType.recurse` to produce `GrammarType`s easily
-  let grammarTypes = grammarTypeList <&> \t -> ((TH.nameBase . thGrammarName) t, t)
-      grammarNames = fst <$> grammarTypes
-      duplicateGNames = grammarNames \\ nub grammarNames
-  when (not $ null duplicateGNames) $ fail $
-    "corrupt language has duplicate grammar names: " ++ show (nub duplicateGNames)
+  thSyncats <- findRecursiveType `mapM` syncatPtrs
+  let sNames = thSyncats <&> \(qualSName, _, _) -> qualSName
+  syncatTypeList <- forM thSyncats $ \(qualSyncatName, paramNames, thCtors) -> do
+    ctorList <- decodeCtor sNames paramNames `mapM` thCtors
+    let productions = ctorList <&> \ctor -> ((TH.nameBase . defdProdName) ctor, ctor)
+        prodNames = fst <$> productions
+        duplicatePNames = prodNames \\ nub prodNames
+    case duplicatePNames of
+      [] -> pure DefdSyncatType
+        { defdSyncatName = qualSyncatName
+        , defdProds = Map.fromList productions
+        }
+      _ -> fail $ "corrupt language has duplicate production names: " ++ show (nub duplicatePNames)
+  -- disallowing duplicates here allows `decodeType.recurse` to produce `RecursiveType`s easily
+  let syncatTypes = syncatTypeList <&> \t -> ((TH.nameBase . defdSyncatName) t, t)
+      syncatNames = fst <$> syncatTypes
+      duplicateSNames = syncatNames \\ nub syncatNames
+  when (not $ null duplicateSNames) $ fail $
+    "corrupt language has duplicate syntactic category names: " ++ show (nub duplicateSNames)
   -- determine the language's type parameters
-  thLangParams <-
+  defdLangParams <-
     let f Nothing (_, tvs, _) = pure (Just $ fixup <$> tvs)
         f (Just tvs) (_, tvs', _)
           | tvs == (fixup <$> tvs') = pure (Just tvs)
           | otherwise = fail $ concat
-            [ "corrupt language has differing type paramaters between gramamr types. expected:\n"
+            [ "corrupt language has differing paramaters between syntactic categories. expected:\n"
             , "  " ++ show tvs ++ "\n"
             , "got:\n"
             , "  " ++ show (fixup <$> tvs')
             ]
-     in fromMaybe [] <$> foldM f Nothing thGrammarTypes
+     in fromMaybe [] <$> foldM f Nothing thSyncats
   -- and we're done
   pure $ DefdLang
     { langQualPrefix
-    , thLangName
-    , thLangParams
-    , defdGrammars = Map.fromList grammarTypes
+    , defdLangName
+    , defdLangParams
+    , defdSyncats = Map.fromList syncatTypes
     }
   where
   -- this is here because TH will add a bunch of garbage on the end of a type variable to ensure it doesn't capture,
@@ -253,15 +255,15 @@ reifyLang langName = do
     loop other = other
   langQualPrefix = reverse . dropWhile (/= '.') . reverse $ langName
   langBase = reverse . takeWhile (/= '.') . reverse $ langName
-  decodeCtor :: [TH.Name] -> [TH.Name] -> TH.Con -> Q DefdCtor
-  decodeCtor gNames paramNames (TH.RecC thCtorName thFields) = do
-    subterms <- forM thFields $ \(thFieldName, _, thSubtermType) -> do
-      typeDesc <- decodeType gNames paramNames thSubtermType
+  decodeCtor :: [TH.Name] -> [TH.Name] -> TH.Con -> Q DefdProd
+  decodeCtor sNames paramNames (TH.RecC defdProdName thFields) = do
+    defdSubterms <- forM thFields $ \(thFieldName, _, thSubtermType) -> do
+      typeDesc <- decodeType sNames paramNames thSubtermType
       pure $ DefdSubterm thFieldName typeDesc
-    pure $ DefdCtor thCtorName subterms
-  decodeCtor _ _ otherCtor = fail $ "corrupt grammar ctor type:\n" ++ show otherCtor
+    pure $ DefdProd{defdProdName,defdSubterms}
+  decodeCtor _ _ otherCtor = fail $ "corrupt production type:\n" ++ show otherCtor
   decodeType :: [TH.Name] -> [TH.Name] -> TH.Type -> Q TypeDesc
-  decodeType gNames paramNames type0 = recurse type0
+  decodeType sNames paramNames type0 = recurse type0
     where
     tvs = TH.VarT <$> paramNames
     recurse tuple | Just (t1:t2:ts) <- fromTuple tuple = do
@@ -277,10 +279,10 @@ reifyLang langName = do
     recurse (TH.AppT TH.ListT a) = ListType <$> recurse a
     recurse appType
       | (TH.ConT thName, args) <- fromApps appType
-      , thName `elem` gNames && args == tvs
+      , thName `elem` sNames && args == tvs
         -- we can just use TH.nameBase here, because in reifyLang, we make sure that there are no duplicates
         -- (there shouldn't be any duplicates anyway as long as language being decoded was generated by this library)
-        = pure $ GrammarType (TH.nameBase thName)
+        = pure $ RecursiveType (TH.nameBase thName)
       | (TH.ConT thName, args) <- fromApps appType = do
         decodedArgs <- recurse `mapM` args
         pure $ CtorType thName decodedArgs
@@ -303,137 +305,135 @@ reifyLang langName = do
   findLangInfo :: Q (TH.Name, [TH.Con]) -- name and constructors of the info type
   findLangInfo = TH.lookupTypeName langName >>= \case
     Nothing -> fail $ "in a nanopass language extension: could not find base language " ++ langName
-    Just thLangName -> TH.reify thLangName >>= \case
-      TH.TyConI (TH.DataD [] qualThLangName [] Nothing grammarNames _) -> pure (qualThLangName, grammarNames)
+    Just defdLangName -> TH.reify defdLangName >>= \case
+      TH.TyConI (TH.DataD [] qualThLangName [] Nothing syncatNames _) -> pure (qualThLangName, syncatNames)
       otherInfo -> fail $ concat
         [ "in a nanopass language extension: base name " ++ langName ++ " does not identify a language: "
         , "  expecting language name to identify data definition, but got this type:\n"
         , "  " ++ show otherInfo
         ]
-  findGrammarType :: TH.Con -> Q (TH.Name, [TH.Name], [TH.Con])
-  findGrammarType (TH.NormalC thTypePtr []) = do
+  findRecursiveType :: TH.Con -> Q (TH.Name, [TH.Name], [TH.Con])
+  findRecursiveType (TH.NormalC thTypePtr []) = do
     let enumPrefix = langBase ++ "_"
     typePtrBase <- case stripPrefix enumPrefix (TH.nameBase thTypePtr) of
       Just it -> pure it
       Nothing -> fail $ concat
         [ "in a nanopass language extension: base name " ++ langBase ++ " does not identify a language: "
-        , "  expecting language enum ctors to start with " ++ enumPrefix ++ ", but got name:\n"
+        , "  expecting language info enum ctors to start with " ++ enumPrefix ++ ", but got name:\n"
         , "  " ++ TH.nameBase thTypePtr
         ]
     let typePtr = TH.mkName $ langQualPrefix ++ typePtrBase
     TH.reify typePtr >>= \case
-      TH.TyConI (TH.DataD [] qualGrammarName thParams _ ctors _) -> do
-        let thParamNames = thParams <&> \case { TH.PlainTV it -> it ; TH.KindedTV it _ -> it }
-        pure (qualGrammarName, thParamNames, ctors)
-      otherType -> fail $ "corrupt language grammar type:\n" ++ show otherType
-  findGrammarType otherCtor = fail $ concat
+      TH.TyConI (TH.DataD [] qualSyncatName thParams _ ctors _) -> do
+        let thParamNames = thParams <&> \case { TH.PlainTV it _ -> it ; TH.KindedTV it _ _ -> it }
+        pure (qualSyncatName, thParamNames, ctors)
+      otherType -> fail $ "corrupt language syntactic category type:\n" ++ show otherType
+  findRecursiveType otherCtor = fail $ concat
     [ "in a nanopass language extension: base name " ++ langName ++ " does not identify a language: "
     , "  expecting language name to identify an enum, but got this constructor:\n"
     , "  " ++ show otherCtor
     ]
-
--- TODO I'll also need a way to modify a language so that it matches up to (and reuses the data types of) an existing language
 
 --------------------------------
 ------ Language Extension ------
 --------------------------------
 
 data LangMod = LangMod
-  { baseLang :: String
-  , newLang :: String
-  , newParams :: [String]
-  , grammarMods :: [GrammarMod]
+  { baseLangReq :: String
+  , newLangReq :: String
+  , newParamReqs :: [String]
+  , syncatMods :: [SyncatMod]
   }
   deriving(Show)
-data GrammarMod
-  = AddGrammar GrammarDef
-  | DelGrammar String
-  | ModCtors
-    { grammarName :: String
-    , ctorMods :: [CtorMod]
+data SyncatMod
+  = AddSyncat SyncatDef
+  | DelSyncat String
+  | ModProds
+    { syncatName :: String
+    , prodMods :: [ProdMod]
     }
   deriving(Show)
-data CtorMod
-  = AddCtor CtorDef
-  | DelCtor String
+data ProdMod
+  = AddProd ProdDef
+  | DelProd String
   deriving(Show)
 
 runModify :: LangMod -> Q [Dec]
 runModify lMod = do
-  oldLang <- reifyLang (baseLang lMod)
+  oldLang <- reifyLang (baseLangReq lMod)
   modifyLang oldLang lMod
 
 modifyLang :: DefdLang -> LangMod -> Q [Dec]
 modifyLang defd mods = do
-  defd' <- restrictLang defd (grammarMods mods)
+  defd' <- restrictLang defd (syncatMods mods)
   -- TODO I think it's at this point that I can generate the default translation
   lang' <- extendLang defd' mods
   runDefine $ defineLang lang'
 
-restrictLang :: DefdLang -> [GrammarMod] -> Q DefdLang
-restrictLang = foldM doGrammar
+restrictLang :: DefdLang -> [SyncatMod] -> Q DefdLang
+restrictLang = foldM doSyncat
   where
-  doGrammar :: DefdLang -> GrammarMod -> Q DefdLang
-  doGrammar l (AddGrammar _) = pure l
-  doGrammar l (DelGrammar gName) = case Map.lookup gName (defdGrammars l) of
-    Just _ -> pure $ l{ defdGrammars = Map.delete gName (defdGrammars l) }
+  doSyncat :: DefdLang -> SyncatMod -> Q DefdLang
+  doSyncat l (AddSyncat _) = pure l
+  doSyncat l (DelSyncat sName) = case Map.lookup sName l.defdSyncats of
+    Just _ -> pure $ l{ defdSyncats = Map.delete sName l.defdSyncats }
     Nothing -> fail $ concat
       [ "in nanopass language extention: "
-      , "attempt to delete non-existent grammar type "
-      , gName ++ " from " ++ show (thLangName l)
+      , "attempt to delete non-existent syntactic category "
+      , sName ++ " from " ++ show (defdLangName l)
       ]
-  doGrammar l (ModCtors gName ctorMods) = case Map.lookup gName (defdGrammars l) of
-    Just grammar -> do
-      grammar' <- foldM doCtors grammar ctorMods
-      pure l{ defdGrammars = Map.insert gName grammar' (defdGrammars l) }
+  doSyncat l (ModProds sName prodMods) = case Map.lookup sName l.defdSyncats of
+    Just syncat -> do
+      syncat' <- foldM doProds syncat prodMods
+      pure l{ defdSyncats = Map.insert sName syncat' l.defdSyncats }
     Nothing -> fail $ concat
       [ "in nanopass language extension: "
-      , "attempt to modify non-existent grammar type "
-      , gName ++ " from " ++ show (thLangName l)
+      , "attempt to modify non-existent syntactic category "
+      , sName ++ " from " ++ show (defdLangName l)
       ]
     where
-    doCtors :: DefdGrammarType -> CtorMod -> Q DefdGrammarType
-    doCtors g (AddCtor _) = pure g
-    doCtors g (DelCtor cName) = case Map.lookup cName (defdCtors g) of
-      Just _ -> pure $ g{ defdCtors = Map.delete cName (defdCtors g) }
+    doProds :: DefdSyncatType -> ProdMod -> Q DefdSyncatType
+    doProds s (AddProd _) = pure s
+    doProds s (DelProd pName) = case Map.lookup pName s.defdProds of
+      Just _ -> pure $ s{ defdProds = Map.delete pName s.defdProds }
       Nothing -> fail $ concat
         [ "in nanopass language extention: "
         , "attempt to delete non-existent term constructor "
-        , gName ++ " from " ++ show (thGrammarName g) ++ " in " ++ show (thLangName l)
+        , sName ++ " from " ++ show s.defdSyncatName ++ " in " ++ show l.defdLangName
         ]
 
 extendLang :: DefdLang -> LangMod -> Q LangDef
-extendLang DefdLang{defdGrammars} lMods = do
-  grammarReqs0 <- doGrammar (grammarMods lMods) `mapM` Map.elems defdGrammars
-  let grammarReqs = grammarReqs0 ++ catAddGrammars (grammarMods lMods)
+extendLang l lMods = do
+  syncatReqs0 <- doSyncat lMods.syncatMods `mapM` Map.elems l.defdSyncats
+  let syncatReqs = syncatReqs0 ++ catAddSyncat lMods.syncatMods
   pure $ LangDef
-    { langNameReq = newLang lMods
-    , langParamReqs = newParams lMods
-    , grammarReqs
+    { langNameReq = lMods.newLangReq
+    , langParamReqs = lMods.newParamReqs
+    , syncatReqs
     }
   where
-  doGrammar :: [GrammarMod] -> DefdGrammarType -> Q GrammarDef
-  doGrammar gMods DefdGrammarType{thGrammarName,defdCtors} = do
-    let ctorReqs0 = doCtor <$> Map.elems defdCtors
-    let ctorReqs = ctorReqs0 ++ catAddCtors thGrammarName gMods
-    pure GrammarDef{grammarNameReq = TH.nameBase thGrammarName, ctorReqs}
-  doCtor :: DefdCtor -> CtorDef
-  doCtor DefdCtor{thTermName, defdArgs} =
-    CtorDef (TH.nameBase thTermName) (doSubterm <$> defdArgs)
+  doSyncat :: [SyncatMod] -> DefdSyncatType -> Q SyncatDef
+  doSyncat gMods DefdSyncatType{defdSyncatName,defdProds} = do
+    let productionReqs0 = doProd <$> Map.elems defdProds
+    let productionReqs = productionReqs0 ++ catAddProd defdSyncatName gMods
+    pure SyncatDef{syncatNameReq = TH.nameBase defdSyncatName, productionReqs}
+  doProd :: DefdProd -> ProdDef
+  doProd DefdProd{defdProdName, defdSubterms} =
+    ProdDef (TH.nameBase defdProdName) (doSubterm <$> defdSubterms)
   doSubterm :: DefdSubterm -> SubtermDef
-  doSubterm DefdSubterm{thSubtermName, defdSubtermType} =
-    SubtermDef (Just $ TH.nameBase thSubtermName) defdSubtermType
-  catAddGrammars (AddGrammar g : moreGMods) = g : catAddGrammars moreGMods
-  catAddGrammars (_ : moreGMods) = catAddGrammars moreGMods
-  catAddGrammars [] = []
-  catAddCtors thName (ModCtors toName ctorMods : moreGMods)
-    | toName == TH.nameBase thName = go ctorMods ++ catAddCtors thName moreGMods
+  doSubterm DefdSubterm{defdSubtermName, defdSubtermType} =
+    SubtermDef (Just $ TH.nameBase defdSubtermName) defdSubtermType
+  catAddSyncat (AddSyncat s : moreSMods) = s : catAddSyncat moreSMods
+  catAddSyncat (_ : moreSMods) = catAddSyncat moreSMods
+  catAddSyncat [] = []
+  catAddProd thName (ModProds toName prodMods : moreSMods)
+    | toName == TH.nameBase thName = go prodMods ++ catAddProd thName moreSMods
     where
-    go (AddCtor c : moreCMods) = c : go moreCMods
-    go (_ : moreCMods) = go moreCMods
+    go (AddProd p : morePMods) = p : go morePMods
+    go (_ : morePMods) = go morePMods
     go [] = []
-  catAddCtors thName (_ : moreCMods) = catAddCtors thName moreCMods
-  catAddCtors _ [] = []
+  catAddProd thName (_ : morePMods) = catAddProd thName morePMods
+  catAddProd _ [] = []
 
 
 ------------------------

@@ -31,6 +31,8 @@ deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
   bad ctx _ = fail $ "`deflang` quasiquoter cannot be used in an " ++ ctx ++ " context,\n\
                      \it can only appear as part of declarations."
 
+-- TODO defpass
+
 ----------------------------------
 ------ Language Definitions ------
 ----------------------------------
@@ -61,44 +63,44 @@ parseParams other = Left $ concat
   ]
 
 parseLangDef :: Sexpr String -> [String] -> [Sexpr String] -> Either String LangDef
-parseLangDef nameExpr langParamReqs grammarExprs = do
+parseLangDef nameExpr langParamReqs syncatExprs = do
   langNameReq <- parseLangName nameExpr
-  grammarReqs <- parseGrammar `mapM` grammarExprs
+  syncatReqs <- parseSyncat `mapM` syncatExprs
   pure $ LangDef
     { langNameReq
     , langParamReqs
-    , grammarReqs
+    , syncatReqs
     }
 
 parseLangName :: Sexpr String -> Either String String
 parseLangName (Atom str) | Just str' <- fromUpname str = pure str'
 parseLangName _ = Left "language name must be an UpCase alphanumeric symbol"
 
-parseGrammar :: Sexpr String -> Either String GrammarDef
-parseGrammar (Combo "(" (nameExpr:ctorExprs)) = do
-  gName <- case nameExpr of
-    (Atom nameStr) | Just gName <- fromUpname nameStr -> pure gName
+parseSyncat :: Sexpr String -> Either String SyncatDef
+parseSyncat (Combo "(" (nameExpr:prodExprs)) = do
+  sName <- case nameExpr of
+    (Atom nameStr) | Just sName <- fromUpname nameStr -> pure sName
     _ -> Left $ concat
-      [ "expecting an uppercase grammar name, got:\n"
+      [ "expecting an uppercase name of a syntactic category, got:\n"
       , "  " ++ Stupid.print id nameExpr
       ]
-  ctors <- parseCtor `mapM` ctorExprs
-  pure $ GrammarDef gName ctors
-parseGrammar other = Left $ concat
-  [ "expecting grammar definition:\n"
-  , "  (<TypeName> <ctor>… )\n"
+  prods <- parseProd `mapM` prodExprs
+  pure $ SyncatDef sName prods
+parseSyncat other = Left $ concat
+  [ "expecting syntactic category definition:\n"
+  , "  (<SyncatName> <production>… )\n"
   , "got:\n:"
   , "  " ++ Stupid.print id other
   ]
 
-parseCtor :: Sexpr String -> Either String CtorDef
-parseCtor (Combo "(" (Atom ctorStr:subtermExprs))
-  | Just ctorName <- fromUpname ctorStr = do
+parseProd :: Sexpr String -> Either String ProdDef
+parseProd (Combo "(" (Atom prodStr:subtermExprs))
+  | Just prodName <- fromUpname prodStr = do
     subterms <- parseSubterm `mapM` subtermExprs
-    pure $ CtorDef ctorName subterms
-parseCtor other = Left $ concat
-  [ "expecting a term contructor definition:\n"
-  , "  (<CtorName> <subterm>… )\n"
+    pure $ ProdDef prodName subterms
+parseProd other = Left $ concat
+  [ "expecting a production definition:\n"
+  , "  (<ProductionName> <subterm>… )\n"
   , "got:\n"
   , "  " ++ Stupid.print id other
   ]
@@ -122,7 +124,7 @@ parseType :: Sexpr String -> Either String TypeDesc
 parseType (Atom str)
   | '$':str' <- str
   , Just mutrec <- fromUpname str'
-    = pure $ GrammarType mutrec
+    = pure $ RecursiveType mutrec
   | Just tyvar <- fromLowername str
     = pure $ VarType (TH.mkName tyvar)
   | Just ctorName <- fromUpdotname str = pure $ CtorType (TH.mkName ctorName) []
@@ -151,10 +153,10 @@ parseType (Combo "{" subexprs)
       ]
 parseType other = Left $ concat
   [ "expecting type description, one of:\n"
-  , "  <metavar>\n"
-  , "  <TypeCtor>                # == (<TypeCtor>)\n"
+  , "  $<SyncatName>\n"
+  , "  <TypeCtor>                # == ($<TypeCtor>)\n"
   , "  (<TypeCtor> <type>… )\n"
-  , "  (<type> <* | + | ?>…)     # list, nonempty list, and maybe\n"
+  , "  (<type> <* | + | ?>… )    # list, nonempty list, and maybe\n"
   , "  {<type> <type> <type>… }  # tuple\n"
   , "  [ <type> :-> <type> ]     # association list\n"
   , "  { <type> :-> <type> }     # ord map\n"
@@ -167,57 +169,57 @@ parseType other = Left $ concat
 ---------------------------------
 
 parseLangMod :: Sexpr String -> Sexpr String -> [String] -> [Sexpr String] -> Either String LangMod
-parseLangMod baseExpr newExpr newParams modExprs = do
-  baseLang <- parseBaseLangName baseExpr
-  newLang <- parseLangName newExpr
-  modss <- parseGrammarMod `mapM` modExprs
+parseLangMod baseExpr newExpr newParamReqs modExprs = do
+  baseLangReq <- parseBaseLangName baseExpr
+  newLangReq <- parseLangName newExpr
+  modss <- parseSyncatMod `mapM` modExprs
   pure $ LangMod
-    { baseLang
-    , newLang
-    , newParams
-    , grammarMods = concat modss
-    } 
+    { baseLangReq
+    , newLangReq
+    , newParamReqs
+    , syncatMods = concat modss
+    }
 
 parseBaseLangName :: Sexpr String -> Either String String
 parseBaseLangName (Atom str) | Just str' <- fromUpdotname str = pure str'
 parseBaseLangName _ = Left "base language name must be a non-empty list of dot-separated UpCase alphanumeric symbol"
 
-parseGrammarMod :: Sexpr String -> Either String [GrammarMod]
-parseGrammarMod (Combo "(" (Atom "+":grammarExprs)) = do
-  (fmap AddGrammar . parseGrammar) `mapM` grammarExprs
-parseGrammarMod (Combo "(" (Atom "-":grammarExprs)) =
-  forM grammarExprs $ \case
-    (Atom grammarStr) | Just gName <- fromUpname grammarStr -> pure $ DelGrammar gName
-    other -> Left $ "expecting grammar name, got:\n  " ++ Stupid.print id other
-parseGrammarMod (Combo "(" (Atom "*":grammarExprs)) =
-  forM grammarExprs $ \case
-    (Combo "(" (Atom gStr:cModExprs))
-      | Just gName <- fromUpname gStr -> do
-        cMods <- parseCtorMod `mapM` cModExprs
-        pure $ ModCtors gName cMods
+parseSyncatMod :: Sexpr String -> Either String [SyncatMod]
+parseSyncatMod (Combo "(" (Atom "+":syncatExprs)) = do
+  (fmap AddSyncat . parseSyncat) `mapM` syncatExprs
+parseSyncatMod (Combo "(" (Atom "-":syncatExprs)) =
+  forM syncatExprs $ \case
+    (Atom syncatStr) | Just sName <- fromUpname syncatStr -> pure $ DelSyncat sName
+    other -> Left $ "expecting the name of a syntactic category, got:\n  " ++ Stupid.print id other
+parseSyncatMod (Combo "(" (Atom "*":syncatExprs)) =
+  forM syncatExprs $ \case
+    (Combo "(" (Atom sStr:pModExprs))
+      | Just sName <- fromUpname sStr -> do
+        pMods <- parseProdMod `mapM` pModExprs
+        pure $ ModProds sName pMods
     other -> Left $ concat
-      [ "expecting grammar modifier:\n"
-      , "  (<TypeName> <ctor mods>… )\n"
+      [ "expecting syntactic category modifier:\n"
+      , "  (<SyncatName> <ctor mods>… )\n"
       , "got:\n"
       , "  " ++ Stupid.print id other
       ]
-parseGrammarMod other = Left $ concat
-  [ "expecting grammar modifier batch:\n"
-  , "  (+ <grammar modifier>… )\n"
-  , "  (* <grammar modifier>… )\n"
-  , "  (- <grammar modifier>… )\n"
+parseSyncatMod other = Left $ concat
+  [ "expecting syntactic category modifier batch:\n"
+  , "  (+ <syncat modifier>… )\n"
+  , "  (* <syncat modifier>… )\n"
+  , "  (- <syncat modifier>… )\n"
   , "got:\n"
   , "  " ++ Stupid.print id other
   ]
 
-parseCtorMod :: Sexpr String -> Either String CtorMod
-parseCtorMod (Combo "(" (Atom "+":Atom ctorStr:subtermExprs))
-  | Just ctorName <- fromUpname ctorStr = do
+parseProdMod :: Sexpr String -> Either String ProdMod
+parseProdMod (Combo "(" (Atom "+":Atom prodStr:subtermExprs))
+  | Just prodName <- fromUpname prodStr = do
     subterms <- parseSubterm `mapM` subtermExprs
-    pure $ AddCtor $ CtorDef ctorName subterms
-parseCtorMod (Combo "(" [Atom "-", Atom ctorStr])
-  | Just ctorName <- fromUpname ctorStr = pure $ DelCtor ctorName
-parseCtorMod other = Left $ concat
+    pure $ AddProd $ ProdDef prodName subterms
+parseProdMod (Combo "(" [Atom "-", Atom prodStr])
+  | Just prodName <- fromUpname prodStr = pure $ DelProd prodName
+parseProdMod other = Left $ concat
   [ "expecting a contructor modifier:\n"
   , "  (+ <CtorName> <subterm>… )\n"
   , "  (- <CtorName>)\n"

@@ -1,6 +1,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TemplateHaskell #-}
 
@@ -40,87 +41,88 @@ declareXlate l1 l2 xlate = do
 data XlateDef = XlateDef
   { xlateParams :: [TH.Name] -- ^ the type parameters of both languages, merged
   , xlateFParam :: TH.Name -- ^ a type for an Applicative parameter
-  , xlateGrammars :: [XlateGrammarDef]
-    -- ^ information about the grammars shared by both source and target
+  , xlateSyncats :: [XlateSyncatDef]
+    -- ^ information about the syntactic cateories shared by both source and target
     -- this is used to allow users to override the bahavior of automatic translation
-  , xlateCtors :: [Either XlateHoleDef XlateAuto] -- FIXME these should go under xlateGrammars
-    -- ^ information about the type constructors in teh source that are missing in the target
+  , xlateProds :: [XlateProd] -- FIXME these should go under xlateSyncats, probly
+    -- ^ information about the productions in the source that are missing in the target
     -- this is so that we require the user to supply these in an Xlate type
   }
+type XlateProd = Either XlateHoleDef XlateAuto
 data XlateAuto = XlateAuto
-  { grammarName :: String
-  , ctorName :: String
+  { syncatName :: String
+  , prodName :: String
   , autoArgs :: [TH.Name -> TH.Name -> Exp] -- functions from xlate and subterm variables to auto-translator
   }
 data XlateHoleDef = XlateHoleDef
-  { grammarName :: String -- the name of the grammar shared by source and target
-  , ctorName :: String -- the name of the source grammar's constructor
-  , holeArgs :: [TH.Type] -- the types of the arguments to source constructor
-  , holeResult :: TH.Type -- the type of the target grammar that must be supplied
+  { syncatName :: String -- the name of the syntactic category shared by source and target
+  , prodName :: String -- the name of the source production
+  , holeArgs :: [TH.Type] -- the types of the subterms of the source production
+  , holeResult :: TH.Type -- the type of the target syntactic category that must be supplied
   }
-data XlateGrammarDef = XlateGrammarDef
-  { grammarName :: String -- the name of the grammar shared by source and target
-  , fromType :: TH.Type -- parameterized type of the source language at this grammar
-  , toType :: TH.Type -- parameterized type of the target language at this grammar
+data XlateSyncatDef = XlateSyncatDef
+  { syncatName :: String -- the name of the syntactic category shared by source and target
+  , fromType :: TH.Type -- parameterized type of the source language at this syntactic category
+  , toType :: TH.Type -- parameterized type of the target language at this syntactic category
   }
 
 xlateDef :: DefdLang -> DefdLang -> Q XlateDef
 xlateDef l1 l2 = do
-  let xlateParams = nub (thLangParams l1 ++ thLangParams l2)
+  let xlateParams = nub (l1.defdLangParams ++ l2.defdLangParams)
   xlateFParam <- if TH.mkName "f" `elem` xlateParams
     then TH.newName "f"
     else pure $ TH.mkName "f"
-  xlateCtors <- fmap concat $ forM (Map.toAscList $ defdGrammars l1) $ detectHoles xlateFParam l1 l2
-  let xlateGrammars = concatMap (detectOverrides xlateFParam l1 l2) $ Map.toAscList (defdGrammars l1)
+  xlateProds <- fmap concat $ forM (Map.toAscList $ l1.defdSyncats) $ detectHoles xlateFParam l1 l2
+  let xlateSyncats = concatMap (detectOverrides xlateFParam l1 l2) $ Map.toAscList l1.defdSyncats
   pure $ XlateDef
     { xlateParams
     , xlateFParam
-    , xlateGrammars
-    , xlateCtors
+    , xlateSyncats
+    , xlateProds
     }
 
-detectHoles :: TH.Name -> DefdLang -> DefdLang -> (String, DefdGrammarType) -> Q [Either XlateHoleDef XlateAuto]
-detectHoles fParam l1 l2 (gName, g1) = case Map.lookup gName (defdGrammars l2) of
+detectHoles :: TH.Name -> DefdLang -> DefdLang -> (String, DefdSyncatType) -> Q [Either XlateHoleDef XlateAuto]
+detectHoles fParam l1 l2 (sName, s1) = case Map.lookup sName l2.defdSyncats of
   Nothing -> pure [] -- no translation required: no l2 ctor can use the a type corresponding to this l1 type (because it doesn't exist)
-  Just g2 -> fmap concat $ forM (Map.toAscList $ defdCtors g1) $ detectHoleCtors g2
+  Just s2 -> fmap concat $ forM (Map.toAscList s1.defdProds) $ detectHoleCtors s2
   where
-  detectHoleCtors :: DefdGrammarType -> (String, DefdCtor) -> Q [Either XlateHoleDef XlateAuto]
-  detectHoleCtors g2 (cName, ctor1) = case Map.lookup cName (defdCtors g2) of
+  detectHoleCtors :: DefdSyncatType -> (String, DefdProd) -> Q [Either XlateHoleDef XlateAuto]
+  detectHoleCtors s2 (pName, prod1) = case Map.lookup pName s2.defdProds of
     -- a required hole, because there is no constructor to target
-    Nothing -> pure [Left $ createHole cName ctor1]
-    Just ctor2
+    Nothing -> pure [Left $ createHole pName prod1]
+    Just prod2
       -- no custom translation required: the arguments of one constructor match up with the arguments of the other
-      | tys1 <- (defdSubtermType <$> defdArgs ctor1)
-      , tys2 <- (defdSubtermType <$> defdArgs ctor2)
+      | tys1 <- (defdSubtermType <$> prod1.defdSubterms)
+      , tys2 <- (defdSubtermType <$> prod2.defdSubterms)
       , tys1 == tys2 -> runMaybeT (createAuto `mapM` tys1) >>= \case
-          Nothing -> pure [Left $ createHole cName ctor1] -- a required hole because no auto-translation possible
+          Nothing -> pure [Left $ createHole pName prod1] -- a required hole because no auto-translation possible
           Just autoArgs -> do
-            pure [Right XlateAuto{grammarName=gName,ctorName=cName,autoArgs}]
+            pure [Right XlateAuto{syncatName=sName,prodName=pName,autoArgs}]
       -- a required hole, because the arguments of the constructors do not have the same structure
-      | otherwise  -> pure [Left $ createHole cName ctor1]
-  createHole cName ctor1 =
-    let holeArgs = flip map (defdArgs ctor1) $ \DefdSubterm{defdSubtermType} ->
-          interpretTypeDesc l1 defdSubtermType
-        holeCtor = TH.ConT (TH.mkName $ langQualPrefix l2 ++ gName)
-        holeCore = foldl AppT holeCtor (TH.VarT <$> thLangParams l2)
+      | otherwise  -> pure [Left $ createHole pName prod1]
+  createHole pName prod1 =
+    let holeArgs = flip map (defdSubterms prod1) $ \subterm ->
+          interpretTypeDesc l1 subterm.defdSubtermType
+        holeCtor = TH.ConT (TH.mkName $ l2.langQualPrefix ++ sName)
+        holeCore = foldl AppT holeCtor (TH.VarT <$> l2.defdLangParams)
         holeResult = AppT (TH.VarT fParam) holeCore
-     in XlateHoleDef{grammarName=gName,ctorName=cName,holeArgs,holeResult}
+     in XlateHoleDef{syncatName=sName,prodName=pName,holeArgs,holeResult}
 
-detectOverrides :: TH.Name -> DefdLang -> DefdLang -> (String, DefdGrammarType) -> [XlateGrammarDef]
-detectOverrides fParam l1 l2 (gName, _) = case Map.lookup gName (defdGrammars l2) of
+detectOverrides :: TH.Name -> DefdLang -> DefdLang -> (String, DefdSyncatType) -> [XlateSyncatDef]
+detectOverrides fParam l1 l2 (sName, _) = case Map.lookup sName l2.defdSyncats of
   Nothing -> [] -- no translation required: no l2 ctor can use the a type corresponding to this l1 type (because it doesn't exist)
   Just _ ->
-    let fromTypeCtor = TH.ConT (TH.mkName $ langQualPrefix l1 ++ gName)
-        fromType = foldl AppT fromTypeCtor (TH.VarT <$> thLangParams l1)
-        toTypeCtor = TH.ConT (TH.mkName $ langQualPrefix l2 ++ gName)
-        toTypeCore = foldl AppT toTypeCtor (TH.VarT <$> thLangParams l2)
+    let fromTypeCtor = TH.ConT (TH.mkName $ l1.langQualPrefix ++ sName)
+        fromType = foldl AppT fromTypeCtor (TH.VarT <$> l1.defdLangParams)
+        toTypeCtor = TH.ConT (TH.mkName $ l2.langQualPrefix ++ sName)
+        toTypeCore = foldl AppT toTypeCtor (TH.VarT <$> l2.defdLangParams)
         toType = AppT (TH.ConT ''Maybe) $ AppT (TH.VarT fParam) toTypeCore
-     in [XlateGrammarDef{grammarName = gName,fromType,toType}]
+     in [XlateSyncatDef{syncatName = sName,fromType,toType}]
 
 createAuto :: TypeDesc -> MaybeT Q (TH.Name -> TH.Name -> Exp)
-createAuto (GrammarType gName) = do
-  let recName = TH.mkName $ "descend" ++ gName ++ "A"
-      auto xlateVar argVar = VarE recName `AppE` VarE xlateVar `AppE` VarE argVar
+createAuto (RecursiveType sName) = do
+  let repName = TH.mkName $ "descend" ++ sName ++ "A"
+      auto xlateVar argVar = VarE repName `AppE` VarE xlateVar `AppE` VarE argVar
   pure auto
 createAuto (VarType _) = do
   let auto _ argVar = VarE 'pure `AppE` VarE argVar
@@ -177,21 +179,21 @@ declareTypeAp x =
     []
   where
   xlateName = TH.mkName "XlateA"
-  tvs = TH.PlainTV <$> xlateParams x ++ [xlateFParam x]
-  holes = flip map (lefts $ xlateCtors x) $ \XlateHoleDef{grammarName,ctorName,holeArgs,holeResult} ->
-    let name = lowerHead grammarName ++ ctorName
-        t = foldr ArrT holeResult holeArgs
+  tvs = flip TH.PlainTV () <$> xlateParams x ++ [xlateFParam x]
+  holes = flip map (lefts $ xlateProds x) $ \hole ->
+    let name = lowerHead hole.syncatName ++ hole.prodName
+        t = foldr ArrT hole.holeResult hole.holeArgs
      in (TH.mkName name, noBang, t)
-  overrides = flip map (xlateGrammars x) $ \XlateGrammarDef{grammarName,fromType,toType} ->
-    let name = lowerHead grammarName
-     in (TH.mkName name, noBang, ArrT fromType toType)
+  overrides = flip map (xlateSyncats x) $ \syncat ->
+    let name = lowerHead syncat.syncatName
+     in (TH.mkName name, noBang, ArrT syncat.fromType syncat.toType)
 
 interpretTypeDesc :: DefdLang -> TypeDesc -> TH.Type
-interpretTypeDesc DefdLang{langQualPrefix,thLangParams} = go
+interpretTypeDesc l = go
   where
-  go (GrammarType gName) =
-    let grammarCtor = TH.ConT (TH.mkName $ langQualPrefix ++ gName)
-     in foldl AppT grammarCtor (TH.VarT <$> thLangParams)
+  go (RecursiveType sName) =
+    let syncatCtor = TH.ConT (TH.mkName $ l.langQualPrefix ++ sName)
+     in foldl AppT syncatCtor (TH.VarT <$> l.defdLangParams)
   go (VarType vName) = TH.VarT vName
   go (CtorType thName argDescs) = foldl AppT (TH.ConT thName) (go <$> argDescs)
   go (ListType argDesc) = AppT TH.ListT (go argDesc)
@@ -214,57 +216,56 @@ interpretTypeDesc DefdLang{langQualPrefix,thLangParams} = go
 ---------------------------------------
 
 defineDescendA :: DefdLang -> DefdLang -> XlateDef -> Q [Dec]
-defineDescendA l1 l2 XlateDef{xlateParams,xlateFParam,xlateGrammars,xlateCtors} = do
-  fmap concat . forM xlateGrammars $ \XlateGrammarDef{grammarName} -> do
-    let funName = TH.mkName $ "descend" ++ grammarName ++ "A"
+defineDescendA l1 l2 xdef = do
+  fmap concat . forM xdef.xlateSyncats $ \XlateSyncatDef{syncatName} -> do
+    let funName = TH.mkName $ "descend" ++ syncatName ++ "A"
     xlateVar <- TH.newName "xlate"
     termVar <- TH.newName "term"
     -- define the automatic case matching
-    autoMatches <- case Map.lookup grammarName (defdGrammars l1) of
-      Nothing -> errorWithoutStackTrace $ "nanopass internal error: failed to find a source grammar that appears as an override: " ++ grammarName
-      Just DefdGrammarType{defdCtors} -> do
-        -- go through all the constructors for this grammar type
-        forM (Map.toAscList defdCtors) $ \(_, DefdCtor{thTermName,defdArgs}) -> do
-          let cName = TH.nameBase thTermName
-          args <- (TH.newName . TH.nameBase . thSubtermName) `mapM` defdArgs
-          let pat = TH.ConP thTermName (TH.VarP <$> args)
-          let body = case findAuto grammarName cName xlateCtors of
-                -- if this constructor has a hole, call the hole
+    autoMatches <- case Map.lookup syncatName l1.defdSyncats of
+      Nothing -> errorWithoutStackTrace $ "nanopass internal error: failed to find a source syncat that appears as an override: " ++ syncatName
+      Just DefdSyncatType{defdProds} -> do
+        -- go through all the productions for this syntactic category's type
+        forM (Map.toAscList defdProds) $ \(_, prod) -> do
+          let pName = TH.nameBase prod.defdProdName
+          args <- (TH.newName . TH.nameBase . defdSubtermName) `mapM` prod.defdSubterms
+          let pat = TH.ConP prod.defdProdName [] (TH.VarP <$> args)
+          let body = case findAuto syncatName pName xdef.xlateProds of
+                -- if this production has a hole, call the hole
                 Just (Left _) ->
-                  let f = TH.mkName $ lowerHead grammarName ++ cName
+                  let f = TH.mkName $ lowerHead syncatName ++ pName
                       recurse = VarE f `AppE` VarE xlateVar
                    in foldl AppE recurse (VarE <$> args)
-                -- TODO otherwise, generate a catamorphism
-                Just (Right XlateAuto{autoArgs}) ->
-                  let e0 = VarE 'pure `AppE` TH.ConE (TH.mkName $ langQualPrefix l2 ++ cName)
+                Just (Right auto) ->
+                  let e0 = VarE 'pure `AppE` TH.ConE (TH.mkName $ l2.langQualPrefix ++ pName)
                       iAppE a b = TH.InfixE (Just a) (VarE '(<*>)) (Just b)
-                      es = zipWith ($) (autoArgs <&> ($ xlateVar)) args
+                      es = zipWith ($) (auto.autoArgs <&> ($ xlateVar)) args
                    in foldl iAppE e0 es
-                Nothing -> error "internal nanopass error: found neither hold nor auto"
+                Nothing -> error "internal nanopass error: found neither hole nor auto"
           pure $ TH.Match pat (TH.NormalB body) []
     let autoBody = TH.CaseE (VarE termVar) autoMatches
     -- define the case match on the result of the override
     termVar' <- TH.newName "term"
-    let override = VarE (TH.mkName $ lowerHead grammarName)
+    let override = VarE (TH.mkName $ lowerHead syncatName)
                    `AppE` (VarE xlateVar)
                    `AppE` (VarE termVar)
         ovrMatches =
-          [ TH.Match (TH.ConP 'Just [TH.VarP termVar']) (TH.NormalB $ VarE termVar') []
-          , TH.Match (TH.ConP 'Nothing []) (TH.NormalB autoBody) []
+          [ TH.Match (TH.ConP 'Just [] [TH.VarP termVar']) (TH.NormalB $ VarE termVar') []
+          , TH.Match (TH.ConP 'Nothing [] []) (TH.NormalB autoBody) []
           ]
     -- tie it all together
     let body = TH.CaseE override ovrMatches
     let clause = TH.Clause [TH.VarP xlateVar, TH.VarP termVar] (TH.NormalB body) []
     -- generate a type signature
-    let quantifier = TH.PlainTV <$> xlateParams ++ [xlateFParam]
-        appClass = TH.ConT ''Applicative `AppT` TH.VarT xlateFParam
+    let quantifier = flip TH.PlainTV TH.InferredSpec <$> xdef.xlateParams ++ [xdef.xlateFParam]
+        appClass = TH.ConT ''Applicative `AppT` TH.VarT xdef.xlateFParam
         xlateArgTyCon = TH.ConT $ TH.mkName "XlateA"
-        xlateArgTy = foldl AppT xlateArgTyCon (TH.VarT <$> xlateParams ++ [xlateFParam])
-        l1ArgTyCon = TH.ConT $ TH.mkName $ langQualPrefix l1 ++ grammarName
-        l1ArgTy = foldl AppT l1ArgTyCon (TH.VarT <$> thLangParams l1)
-        l2ResTyCon = TH.ConT $ TH.mkName $ langQualPrefix l2 ++ grammarName
-        l2ResTyCore = foldl AppT l2ResTyCon (TH.VarT <$> thLangParams l2)
-        l2ResTy = AppT (TH.VarT xlateFParam) l2ResTyCore
+        xlateArgTy = foldl AppT xlateArgTyCon (TH.VarT <$> xdef.xlateParams ++ [xdef.xlateFParam])
+        l1ArgTyCon = TH.ConT $ TH.mkName $ l1.langQualPrefix ++ syncatName
+        l1ArgTy = foldl AppT l1ArgTyCon (TH.VarT <$> l1.defdLangParams)
+        l2ResTyCon = TH.ConT $ TH.mkName $ l2.langQualPrefix ++ syncatName
+        l2ResTyCore = foldl AppT l2ResTyCon (TH.VarT <$> l2.defdLangParams)
+        l2ResTy = AppT (TH.VarT xdef.xlateFParam) l2ResTyCore
     -- and emit both signature and definition
     pure
       [ TH.SigD funName $ TH.ForallT quantifier [appClass] $
@@ -283,7 +284,7 @@ idiomAppE :: Exp -> Exp -> Exp
 idiomAppE a b = TH.InfixE (Just a) (VarE '(<*>)) (Just b)
 
 containsGrammar :: TypeDesc -> Bool
-containsGrammar (GrammarType _) = True
+containsGrammar (RecursiveType _) = True
 containsGrammar (VarType _) = False
 containsGrammar (CtorType _ ts) = any containsGrammar ts
 containsGrammar (ListType t) = containsGrammar t
@@ -292,13 +293,14 @@ containsGrammar (NonEmptyType t) = containsGrammar t
 containsGrammar (TupleType t1 t2 ts) = any containsGrammar (t1:t2:ts)
 containsGrammar (MapType t1 t2) = containsGrammar t1 || containsGrammar t2
 
-findAuto :: String -> String -> [Either XlateHoleDef XlateAuto] -> Maybe (Either XlateHoleDef XlateAuto)
-findAuto gName cName autosHoles = case filter f autosHoles of
+findAuto :: String -> String -> [XlateProd] -> Maybe XlateProd
+findAuto sName pName autosHoles = case filter f autosHoles of
   [] -> Nothing
   x:_ -> Just x
   where
-  f (Left XlateHoleDef{grammarName,ctorName}) = grammarName == gName && ctorName == cName
-  f (Right XlateAuto{grammarName,ctorName}) = grammarName == gName && ctorName == cName
+  f :: XlateProd -> Bool
+  f (Left x) = x.syncatName == sName && x.prodName == pName
+  f (Right x) = x.syncatName == sName && x.prodName == pName
 
 
 lowerHead :: String -> String
