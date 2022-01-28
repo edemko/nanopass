@@ -8,7 +8,7 @@
 module Lang where
 
 import Data.Monoid (First)
-import Language.Nanopass.QQ (deflang)
+import Language.Nanopass (deflang)
 
 data Foo a b c = Foo [c]
   deriving (Show,Functor,Foldable,Traversable)

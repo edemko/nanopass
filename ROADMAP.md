@@ -2,6 +2,10 @@ TODO
 
 ## 0.0.2.0
 
+* documentation on `deflang`, `defpass`
+
+* finish readme
+
 * a pure interface for translation
   ```
   data Xlate funny = Xlate

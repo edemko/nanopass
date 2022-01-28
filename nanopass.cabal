@@ -21,11 +21,11 @@ library
   hs-source-dirs: src
   exposed-modules:
     Language.Nanopass
+  other-modules:
     Language.Nanopass.LangDef
     Language.Nanopass.QQ
     Language.Nanopass.Xlate
     Text.Parse.Stupid
-  -- other-modules:
   build-depends:
     , base >=4.11.1
     , containers >=0.6

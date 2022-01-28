@@ -183,6 +183,7 @@ parseType (Combo "{" subexprs)
 parseType other = Left $ concat
   [ "expecting type description, one of:\n"
   , "  $<SyncatName>\n"
+  , "  <typeParam>\n"
   , "  <TypeCtor>                # == ($<TypeCtor>)\n"
   , "  (<TypeCtor> <type>… )\n"
   , "  (<type> <* | + | ?>… )    # list, nonempty list, and maybe\n"

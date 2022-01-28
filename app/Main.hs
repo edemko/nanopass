@@ -7,7 +7,7 @@ module Main where
 
 import Data.Functor.Identity
 
-import Language.Nanopass.QQ (deflang,defpass)
+import Language.Nanopass (deflang,defpass)
 import Text.Pretty.Simple (pPrint)
 
 import qualified Lang as L0
