@@ -30,7 +30,7 @@ deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
     sexprs <- case Stupid.parse input of
       Just it -> pure it
       Nothing -> fail "sexpr syntax error"
-    case parseDefBaseOrExt sexprs of
+    case parseDefBaseOrExt (Just input) sexprs of
       Right (Left def) -> runDefine $ defineLang def
       Right (Right mod) -> runModify mod
       Left err -> fail err
@@ -64,18 +64,18 @@ defpass = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
 ------ Language Definitions ------
 ----------------------------------
 
-parseDefBaseOrExt :: [Sexpr String] -> Either String (Either LangDef LangMod)
-parseDefBaseOrExt (langName:Atom ":->":rest) = case rest of
+parseDefBaseOrExt :: Maybe String -> [Sexpr String] -> Either String (Either LangDef LangMod)
+parseDefBaseOrExt originalText (langName:Atom ":->":rest) = case rest of
   (extName:rest') -> case rest' of
     (candidateParams:rest'') | Right params <- parseParams candidateParams
-      -> Right <$> parseLangMod langName extName params rest''
-    _ -> Right <$> parseLangMod langName extName [] rest'
+      -> Right <$> parseLangMod originalText langName extName params rest''
+    _ -> Right <$> parseLangMod originalText langName extName [] rest'
   _ -> Left $ "expecting a new language name"
-parseDefBaseOrExt (langName:rest) = case rest of
+parseDefBaseOrExt originalText (langName:rest) = case rest of
   (candidateParams:rest') | Right params <- parseParams candidateParams
-    -> Left <$> parseLangDef langName params rest'
-  _ -> Left <$> parseLangDef langName [] rest
-parseDefBaseOrExt _ = Left $ "expecting a langauge name"
+    -> Left <$> parseLangDef originalText langName params rest'
+  _ -> Left <$> parseLangDef originalText langName [] rest
+parseDefBaseOrExt _ _ = Left $ "expecting a langauge name"
 
 parseParams :: Sexpr String -> Either String [String]
 parseParams (Combo "(" params) = parseParam `mapM` params
@@ -89,14 +89,16 @@ parseParams other = Left $ concat
   , "  " ++ show other
   ]
 
-parseLangDef :: Sexpr String -> [String] -> [Sexpr String] -> Either String LangDef
-parseLangDef nameExpr langParamReqs syncatExprs = do
+parseLangDef :: Maybe String -> Sexpr String -> [String] -> [Sexpr String] -> Either String LangDef
+parseLangDef originalProgram nameExpr langParamReqs syncatExprs = do
   langNameReq <- parseLangName nameExpr
   syncatReqs <- parseSyncat `mapM` syncatExprs
   pure $ LangDef
     { langNameReq
     , langParamReqs
     , syncatReqs
+    , originalProgram
+    , baseDefdLang = Nothing
     }
 
 parseLangName :: Sexpr String -> Either String String
@@ -195,8 +197,8 @@ parseType other = Left $ concat
 ------ Language Extensions ------
 ---------------------------------
 
-parseLangMod :: Sexpr String -> Sexpr String -> [String] -> [Sexpr String] -> Either String LangMod
-parseLangMod baseExpr newExpr newParamReqs modExprs = do
+parseLangMod :: Maybe String -> Sexpr String -> Sexpr String -> [String] -> [Sexpr String] -> Either String LangMod
+parseLangMod originalModProgram baseExpr newExpr newParamReqs modExprs = do
   baseLangReq <- parseBaseLangName baseExpr
   newLangReq <- parseLangName newExpr
   modss <- parseSyncatMod `mapM` modExprs
@@ -205,6 +207,7 @@ parseLangMod baseExpr newExpr newParamReqs modExprs = do
     , newLangReq
     , newParamReqs
     , syncatMods = concat modss
+    , originalModProgram
     }
 
 parseBaseLangName :: Sexpr String -> Either String String

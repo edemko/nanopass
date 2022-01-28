@@ -2,6 +2,7 @@
 
 ## 0.0.2.0 -- YYYY-mm-dd
 
+* Generate documentation for generated types/functions.
 * Requires template-haskell >=2.18, and therefore GHC 9.2.1
 
 ## 0.0.1.0 -- 2022-01-26

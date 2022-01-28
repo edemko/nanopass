@@ -2,6 +2,9 @@ TODO
 
 ## 0.0.2.0
 
+
+* fix calling autoTraversable: apply type arguments before asking isInstance
+
 * a pure interface for translation
   ```
   data Xlate funny = Xlate
@@ -18,9 +21,15 @@ TODO
   descendExpr xlate = runidentity . exprDescendA (idXlate xlate)
   ```
 
+* generate documentation
+  * the members of XlateA
+  * on Xlate
+  * the members of Xlate
+  * on `descend*`
+
+
 * move the XlateDef's constructors into the xlateSyncats
 
-* use getDoc/putDoc to write an explanation of the generated languages/translators
 
 ## 0.0.3.0
 
@@ -34,3 +43,6 @@ TODO
   * norm-parens (remove all any only unnecessary parentheses from lambda terms)
   * more
 
+* allow user comments on productions and subterms
+
+As features start to become unmanageable, I may want to split nanopass into nanopass-boot, and a true nanopass, which is built with nanopass (i.e. nanopass-boot)
