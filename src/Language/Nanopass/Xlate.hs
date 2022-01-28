@@ -143,7 +143,8 @@ createAuto (CtorType tyName ts)
     pure auto
   | t:ts' <- reverse ts
   , all (not . containsGrammar) ts' = do
-      isTraversable <- M.lift $ TH.isInstance ''Traversable [TH.ConT tyName]
+      let travCandidate = foldl AppT (TH.ConT tyName) (interpretTypeDesc undefined <$> ts')
+      isTraversable <- M.lift $ TH.isInstance ''Traversable [travCandidate]
       if isTraversable then traversableAuto t else hoistNothing
   -- TODO maybe try Bitraversable
   | otherwise = hoistNothing

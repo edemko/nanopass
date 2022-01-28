@@ -2,9 +2,6 @@ TODO
 
 ## 0.0.2.0
 
-
-* fix calling autoTraversable: apply type arguments before asking isInstance
-
 * a pure interface for translation
   ```
   data Xlate funny = Xlate
