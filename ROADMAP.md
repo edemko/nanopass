@@ -2,34 +2,27 @@ TODO
 
 ## 0.0.2.0
 
-* documentation on `deflang`, `defpass`
-
-* finish readme
-
 * a pure interface for translation
   ```
-  data Xlate funny = Xlate
+  data XlateId funny = XlateId
     { exprLam :: String -> [L0.Stmt funny] -> L1.Expr
     , expr :: L0.Expr funny -> Maybe L1.Expr
     }
-  idXlate :: Xlate funny -> XlateA funny f
-  idXlate xlate = XlateA
+  idXlate :: XlateId funny -> Xlate funny f
+  idXlate xlate = Xlate
     { exprLam = \x e -> Identity $ xlate.exprLam x e
     , expr = \l0 -> Identity <$> xlate.expr l0
     }
 
-  descendExpr :: Xlate funny -> L0.Expr funny -> L1.Expr
-  descendExpr xlate = runidentity . exprDescendA (idXlate xlate)
+  descendExprId :: XlateId funny -> L0.Expr funny -> L1.Expr
+  descendExprId xlate = runIdentity . exprDescend (idXlate xlate)
   ```
 
 * generate documentation
-  * the members of XlateA
-  * on Xlate
   * the members of Xlate
-  * on `descend*`
 
 
-* move the XlateDef's constructors into the xlateSyncats
+* move the XlateDef's constructors into the xlateSyncats?
 
 
 ## 0.0.3.0

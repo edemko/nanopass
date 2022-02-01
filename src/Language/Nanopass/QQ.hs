@@ -15,13 +15,64 @@ import Prelude hiding (mod)
 import Control.Monad (forM)
 import Language.Haskell.TH (Q, Dec)
 import Language.Haskell.TH.Quote (QuasiQuoter(..))
-import Language.Nanopass.Xlate (mkXlateA)
+import Language.Nanopass.Xlate (mkXlate)
 import Text.Parse.Stupid (Sexpr(..))
 
 
 import qualified Language.Haskell.TH as TH
 import qualified Text.Parse.Stupid as Stupid
 
+-- | Define a language, either from scratch or by derivation from an existing language.
+-- The syntax is based on s-expressions. Whitespace doesn't matter, and a (full) line can be commented out with a hash (@#@).
+-- More details and examples are given in the [readme](https://github.com/edemko/nanopass/blob/master/README.md).
+--
+-- We embed the syntax of the quasiquoters in a modified form of sexprs which allow---and distinguish between---square and curly brackets alongside round brackets.
+-- Atoms are just sequences of characters that don't contain whitespace, though we only recognize a handful of these as valid syntactically.
+-- Importantly, we treat symbols differently based on their shape:
+--
+--   * @UpCamelCase@ is used as in normal Haskell: to identify constructors, both type- and data-
+--   * @$Name@ is used for recursive references to syntactic categories
+--   * @lowerCamel@ is used for language parameters and the names of terms
+--   * @DotSeparated.UpCamelCase@ is used to qualify the names of languages and types.
+--   * a handful of operators are used
+-- 
+-- Since the syntax is based on s-expressions, we use [Scheme's entry format](https://schemers.org/Documents/Standards/R5RS/HTML/r5rs-Z-H-4.html#%_sec_1.3.3) conventions for describing the syntax.
+-- Importantly, we syntactic variables are enclosed in @⟨angle brackets⟩@, and ellipsis @⟨thing⟩…@ indicate zero or more repetitions of @⟨thing⟩@.
+-- Round, square, and curly brackets, as well as question mark, asterisk, and so on have no special meaning: they only denote themselves.
+--
+-- >  langdef
+-- >    ::= ⟨language definition⟩
+-- >     |  ⟨language modification⟩
+-- >  
+-- >  language definition
+-- >    ::= ⟨UpName⟩ ( ⟨lowName⟩… ) ⟨syntactic category⟩…
+-- >    ::= ⟨UpName⟩ ⟨syntactic category⟩…
+-- >  
+-- >  language modification
+-- >    ::= ⟨Up.Name⟩ :-> ⟨UpName⟩ ( ⟨lowName⟩… ) ⟨syntactic category modifier⟩…
+-- >     |  ⟨Up.Name⟩ :-> ⟨UpName⟩ ⟨syntactic category modifier⟩…
+-- >  
+-- >  syntactic category ::= ( ⟨UpName⟩ ⟨production⟩… )
+-- >  production ::= ( ⟨UpName⟩ ⟨subterm⟩… )
+-- >  subterm
+-- >    ::= { ⟨lowName⟩ ⟨type⟩ }
+-- >     |  ⟨type⟩
+-- >  
+-- >  type
+-- >    ::= $⟨UpName⟩                               # reference a syntactic category
+-- >     |  ⟨lowName⟩                               # type parameter
+-- >     |  ( ⟨Up.Name⟩ ⟨type⟩… )                   # apply a Haskell Type constructor to arguments
+-- >     |  ⟨Up.Name⟩                               # same as: (⟨UpName⟩)
+-- >     |  ( ⟨type⟩ ⟨type operator⟩… )             # apply common type operators (left-associative)
+-- >     |  ( ⟨Up.Name⟩ ⟨type⟩… ⟨type operator⟩… )  # same as: ((⟨UpName⟩ ⟨type⟩…) ⟨type operator⟩…)
+-- >     |  { ⟨type⟩ ⟨type⟩ ⟨type⟩… }               # tuple type
+-- >     |  [ ⟨type⟩ :-> ⟨type⟩ ]                   # association list: ({⟨type⟩ ⟨type⟩} *)
+-- >     |  { ⟨type⟩ :-> ⟨type⟩ }                   # Data.Map
+-- >  
+-- >  type operator
+-- >    ::= *  # []
+-- >     |  +  # NonEmpty
+-- >     |  ?  # Maybe
 deflang :: QuasiQuoter
 deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
   where
@@ -37,7 +88,32 @@ deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
   bad ctx _ = fail $ "`deflang` quasiquoter cannot be used in a " ++ ctx ++ " context,\n\
                      \it can only appear as part of declarations."
 
-
+-- | Define automatic translation between two langauges.
+-- This creates an @Xlate@ type and the @descend\<Syntactic Category\>@ family of functions.
+-- A translation function is generated for each syntactic category with the same name in both source and target languages.
+-- At the moment, there is no provision for altering the name of the type or translation function(s),
+--   but I expect you'll only want to define one translation per module.
+--
+-- The @Xlate@ type takes all the parameters from both languages (de-duplicating parameters of the same name),
+--   as well as an additional type parameter, which is the functor @f@ under which the translation occurs.
+--
+-- The type of a @descend\<Syntactic Category\>@ function is
+--   @Xlate f → σ → f σ'@.
+--
+-- If a production in the source language has subterms @τ₁ … τₙ@ and is part of the syntactic category @σ@,
+--   then a hole member is a function of type @τ₁ → … τₙ → f σ'@, where @σ'@ is the corresponding syntactic category in the target language.
+-- Essentially, you get access all the subterms, and can use the 'Applicative' to generate a target term as long as you don't cross syntactic categories.
+--
+-- If a source language has syntactic category @σ@ with the same name as the target's syntactic category @σ'@,
+--   then an override member is a function of type @σ → 'Maybe' (f σ')@.
+-- If an override returns 'Nothing', then the automatic translation will be used,
+--   otherwise the automatic translation is ignored in favor of the result under the 'Just'.
+--
+-- More details and examples are given in the [readme](https://github.com/edemko/nanopass/blob/master/README.md).
+--
+-- The syntax is:
+--
+-- >  ⟨Up.Name⟩ :-> ⟨Up.Name⟩
 defpass :: QuasiQuoter
 defpass = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
   where
@@ -49,7 +125,7 @@ defpass = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
       Right (l1Name, l2Name) -> do
         l1 <- reifyLang l1Name
         l2 <- reifyLang l2Name
-        mkXlateA l1 l2
+        mkXlate l1 l2
       Left err -> fail err
   bad ctx _ = fail $ "`defpass` quasiquoter cannot be used in a " ++ ctx ++ "context,\n\
                      \it can only appear as part of declarations."

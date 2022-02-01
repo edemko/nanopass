@@ -122,12 +122,75 @@ My expectation is that the resulting code will be fast because it is the style o
 The example above only examined a portion of this implementation's capabilities.
 Also, examples alone are not good enough to describe a system; one must have definitions as well.
 
-TODO: concepts
-  * language names
-  * language parameters
-  * syntactic categories
-  * productions
-  * subterms
+Nanopass generates sets of mutually-recursive types called languages,
+  and also functions to help translate between different languages.
+We'll first go over the concepts, and then give the syntax.
+
+### Languages
+
+A *language* in Nanopass is represented as a set of mutually-recursive types.
+One of these generated types is called a *syntactic category*.
+Languages can be parameterized, which means that each syntactic category (one of the mutually-recursive types) is parameterized with the same type variables.
+Every syntactic category has one or more constructors, called *productions*.
+These productions are records, and each member is called a *subterm*.
+If a production only has one subterm, it need not specify a name, and the name `un<Production>` will be used.
+
+Each language is identified by a *language name*.
+Under the hood, the language name is also the name of a type with constructors that reference (by name) to the syntactic categories of the language.
+Thus, languages names must start with an uppercase letter, and may be qualified.
+
+It is best to define each language in a separate module.
+You will need to export the language type (named after the language name) and all its constructors,
+  and you will also need to export each syntactic category (and its constructors).
+If the only thing you define in a module is a language, then it's easy enough to just export everything.
+
+### Translations
+
+You can request Nanopass to generate automatic translation between two languages.
+However, the common case is that some language terms cannot be automatically translated, and you may also need to do something different from the automatic translation.
+Thus, the generated functions are parameterized by a type named `Xlate`, which has a member for each
+  1. *hole*, which is a production in the source language which is altered or missing in the target, and
+  2. *override*, which is a syntactic category with the same name in both languages.
+This type assumes the translation will occur in an `Applicative` functor.
+
+A translation function is generated for each syntactic category with the same name in both source and target languages.
+The name of the translation function is `descend<Syntactic Category>`.
+At the moment, there is no provision for altering the name of the type or translation function(s),
+  but I expect you'll only want to define one translation per module.
+The type of a `descend<Syntactic Category>` function is
+  `Xlate f → σ → f σ'`.
+
+The `Xlate` type takes all the parameters from both languages (de-duplicating parameters of the same name),
+  as well as an additional type parameter, which is the functor `f` under which the translation occurs.
+
+If a production in the source language has subterms `τ₁ … τₙ` and is part of the syntactic category `σ`,
+  then a hole member is a function of type `τ₁ → … τₙ → f σ'`, where `σ'` is the corresponding syntactic category in the target language.
+Essentially, you get access all the subterms, and can use the `Applicative` to generate a target term as long as you don't cross syntactic categories.
+
+If a source language has syntactic category `σ` with the same name as the target's syntactic category `σ'`,
+  then an override member is a function of type `σ → Maybe (f σ')`.
+If an override returns `Nothing`, then the automatic translation will be used,
+  otherwise the automatic translation is ignored in favor of the result under the `Just`.
+
+
+For the moment, there isn't a non-functor version of translation, but this is easily emulated with `unIdentity` and `pure` in the appropriate locations.
+
+So, what _can_ be auto-translated?
+If the subterms of a production don't match, there's nothing we can do, but even when they do match, we can't always generate a translation.
+Broadly, a subterm can be auto-translated when it mentions other syntactic categories only in `Traversable` position.
+  * An auto-translation exists for any subterm which has a type that corresponds to a syntactic category in the target languatge
+  * A trivial auto-translation exists when the subterm does not mention any other syntactic categories
+  * An auto-translation knows about tuples: as long as every element of the tuple is translatable, the tuple is translatable
+  * An auto-translation knows about `Traversable`:
+    if the only mention of a syntactic category is in the last type argument of a type constructor
+      and that type has a `Traversable` instance, we translate using `traverse`.
+    Importantly, this includes common data structures useful for defining languages,
+      such as lists, non-empty lists, `Maybe`, and `Map k` when `k` does not mention a syntactic category.
+
+
+I had considered just calling `error` when the automatic translation couldn't be generated.
+However, this would lead to functions like `case term of { … ; _ -> defaultXlate }`, which hide incomplete pattern match warnings.
+By using an `Xlate` type, we maintain warnings whenever part of the translation is not defined; it's just that those warnings are uninitialized member warnings instead.
 
 ### Syntax
 
@@ -136,14 +199,15 @@ Atoms are just sequences of characters that don't contain whitespace, though we 
 Importantly, we treat symbols differently based on their shape:
   * `UpCamelCase` is used as in normal Haskell: to identify constructors, both type- and data-
   * `$Name` is used for recursive references
-  * `lowerCamel` is used TODO
+  * `lowerCamel` is used for language parameters and the names of terms
   * `DotSeparated.UpCamelCase` is used to qualify the names of languages and types.
   * a handful of operators are used
 
-Since the syntax is based on s-expressions, we use [Scheme's entry format](https://schemers.org/Documents/Standards/R5RS/) conventions for describing the syntax.
+Since the syntax is based on s-expressions, we use [Scheme's entry format](https://schemers.org/Documents/Standards/R5RS/HTML/r5rs-Z-H-4.html#%_sec_1.3.3) conventions for describing the syntax.
 Importantly, we syntactic variables are enclosed in `⟨angle brackets⟩`, and ellipsis `⟨thing⟩…` indicate zero or more repetitions of `⟨thing⟩`.
 Round, square, and curly brackets, as well as question mark, asterisk, and so on have no special meaning: they only denote themselves.
 
+The syntax for defining languages, from scratch or by derivation is:
 ```
 langdef
   ::= ⟨language definition⟩
@@ -164,15 +228,15 @@ subterm
    |  ⟨type⟩
 
 type
-  ::= $⟨UpName⟩                             # reference a syntactic category
-   |  ⟨lowName⟩                             # type parameter
-   |  ( ⟨Up.Name⟩ ⟨type⟩… )                  # apply a Haskell Type constructor to arguments
-   |  ⟨Up.Name⟩                             # same as: (⟨UpName⟩)
-   |  ( ⟨type⟩ ⟨type operator⟩… )            # apply common type operators (left-associative)
+  ::= $⟨UpName⟩                               # reference a syntactic category
+   |  ⟨lowName⟩                               # type parameter
+   |  ( ⟨Up.Name⟩ ⟨type⟩… )                   # apply a Haskell Type constructor to arguments
+   |  ⟨Up.Name⟩                               # same as: (⟨UpName⟩)
+   |  ( ⟨type⟩ ⟨type operator⟩… )             # apply common type operators (left-associative)
    |  ( ⟨Up.Name⟩ ⟨type⟩… ⟨type operator⟩… )  # same as: ((⟨UpName⟩ ⟨type⟩…) ⟨type operator⟩…)
    |  { ⟨type⟩ ⟨type⟩ ⟨type⟩… }               # tuple type
-   |  [ ⟨type⟩ :-> ⟨type⟩ ]                  # association list: ({⟨type⟩ ⟨type⟩} *)
-   |  { ⟨type⟩ :-> ⟨type⟩ }                  # Data.Map
+   |  [ ⟨type⟩ :-> ⟨type⟩ ]                   # association list: ({⟨type⟩ ⟨type⟩} *)
+   |  { ⟨type⟩ :-> ⟨type⟩ }                   # Data.Map
 
 type operator
   ::= *  # []
@@ -188,13 +252,10 @@ production modifier
    |  ( - ⟨Upname⟩ )
 ```
 
-TODO: automatic translations
-
-TODO: applicative and pure translation interfaces
-  * XlateA, Xlate
-  * `descend*`, `descend*A`
-
-TODO: what do I need to export after I define a language?
+The syntax for requesting a translation is:
+```
+⟨Up.Name⟩ :-> ⟨Up.Name⟩
+```
 
 ### What are "Syntactic Categories"?
 

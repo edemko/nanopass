@@ -38,9 +38,9 @@ main = do
   pPrint $ compile theE
 
 compile :: L0.Expr () -> Expr
-compile = runIdentity . descendExprA xlate
+compile = runIdentity . descendExpr xlate
   where
-  xlate = XlateA
+  xlate = Xlate
     { expr = const Nothing
     , exprLam = \var body -> pure $ case body of
         [] -> Lam var $ Var var
