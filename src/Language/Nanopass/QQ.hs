@@ -89,7 +89,8 @@ deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
                      \it can only appear as part of declarations."
 
 -- | Define automatic translation between two langauges.
--- This creates an @Xlate@ type and the @descend\<Syntactic Category\>@ family of functions.
+-- This creates an @Xlate@ type and the @descend\<Syntactic Category\>@ family of functions,
+--   as well as pure variants (@XlateI@ and @descend\<Syntactic Category\>I@) and a lifting function @idXlate@.
 -- A translation function is generated for each syntactic category with the same name in both source and target languages.
 -- At the moment, there is no provision for altering the name of the type or translation function(s),
 --   but I expect you'll only want to define one translation per module.
@@ -108,6 +109,19 @@ deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
 --   then an override member is a function of type @σ → 'Maybe' (f σ')@.
 -- If an override returns 'Nothing', then the automatic translation will be used,
 --   otherwise the automatic translation is ignored in favor of the result under the 'Just'.
+--
+-- The pure variants have the same form as the 'Applicative' ones, but:
+--
+--   * @XlateI@ is not parameterized by @f@, nor are the types of its members,
+--   * the members of @XlateI@ are suffixed with the letter @I@, and
+--   * the types of the @descend\<Syntactic Category\>I@ functions are not parameterzed by @f@.
+--
+-- The @idXlate@ function is used by Nanopass to translate @XlateI@ values into @Xlate@ values.
+-- This is done so that the same code paths can be used for both pure and 'Applicative' translations.
+-- Under the hood, this is done with appropriate wrapping/unwrapping of 'Identity', which is a no-op.
+--
+-- None of the functions defined by this quasiquoter need to be expoted for Nanopass to function.
+-- I expect you will not export any of these definitions directly, but instead wrap them into a complete pass, and only export that pass.
 --
 -- More details and examples are given in the [readme](https://github.com/edemko/nanopass/blob/master/README.md).
 --

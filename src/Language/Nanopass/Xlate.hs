@@ -21,6 +21,7 @@ import Control.Monad (forM)
 import Control.Monad.Trans.Maybe (MaybeT(..))
 import Data.Either (lefts)
 import Data.Functor ((<&>))
+import Data.Functor.Identity (Identity(..))
 import Data.List (nub)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
@@ -41,8 +42,10 @@ mkXlate l1 l2 = xlateDef l1 l2 >>= declareXlate l1 l2
 declareXlate :: DefdLang -> DefdLang -> XlateDef -> Q [Dec]
 declareXlate l1 l2 xlate = do
   xlateType <- declareType xlate
+  xlateTypeI <- declareTypeI xlate
+  xlateLifter <- declareXlateLifter xlate
   descends <- defineDescend l1 l2 xlate
-  pure $ xlateType : descends
+  pure $ xlateType : xlateTypeI : xlateLifter ++ descends
 
 ---------------------------------------------
 ------ Gather Translation Requirements ------
@@ -82,8 +85,8 @@ xlateDef l1 l2 = do
   xlateFParam <- if TH.mkName "f" `elem` xlateParams
     then TH.newName "f"
     else pure $ TH.mkName "f"
-  xlateProds <- fmap concat $ forM (Map.toAscList $ l1.defdSyncats) $ detectHoles xlateFParam l1 l2
-  let xlateSyncats = concatMap (detectOverrides xlateFParam l1 l2) $ Map.toAscList l1.defdSyncats
+  xlateProds <- fmap concat $ forM (Map.toAscList $ l1.defdSyncats) $ detectHoles l1 l2
+  let xlateSyncats = concatMap (detectOverrides l1 l2) $ Map.toAscList l1.defdSyncats
   pure $ XlateDef
     { xlateParams
     , xlateFParam
@@ -91,8 +94,8 @@ xlateDef l1 l2 = do
     , xlateProds
     }
 
-detectHoles :: TH.Name -> DefdLang -> DefdLang -> (String, DefdSyncatType) -> Q [Either XlateHoleDef XlateAuto]
-detectHoles fParam l1 l2 (sName, s1) = case Map.lookup sName l2.defdSyncats of
+detectHoles :: DefdLang -> DefdLang -> (String, DefdSyncatType) -> Q [Either XlateHoleDef XlateAuto]
+detectHoles l1 l2 (sName, s1) = case Map.lookup sName l2.defdSyncats of
   Nothing -> pure [] -- no translation required: no l2 ctor can use the a type corresponding to this l1 type (because it doesn't exist)
   Just s2 -> fmap concat $ forM (Map.toAscList s1.defdProds) $ detectHoleCtors s2
   where
@@ -114,19 +117,17 @@ detectHoles fParam l1 l2 (sName, s1) = case Map.lookup sName l2.defdSyncats of
     let holeArgs = flip map (defdSubterms prod1) $ \subterm ->
           interpretTypeDesc l1 subterm.defdSubtermType
         holeCtor = TH.ConT (TH.mkName $ l2.langQualPrefix ++ sName)
-        holeCore = foldl AppT holeCtor (TH.VarT <$> l2.defdLangParams)
-        holeResult = AppT (TH.VarT fParam) holeCore
+        holeResult = foldl AppT holeCtor (TH.VarT <$> l2.defdLangParams)
      in XlateHoleDef{syncatName=sName,prodName=pName,holeArgs,holeResult}
 
-detectOverrides :: TH.Name -> DefdLang -> DefdLang -> (String, DefdSyncatType) -> [XlateSyncatDef]
-detectOverrides fParam l1 l2 (sName, _) = case Map.lookup sName l2.defdSyncats of
+detectOverrides :: DefdLang -> DefdLang -> (String, DefdSyncatType) -> [XlateSyncatDef]
+detectOverrides l1 l2 (sName, _) = case Map.lookup sName l2.defdSyncats of
   Nothing -> [] -- no translation required: no l2 ctor can use the a type corresponding to this l1 type (because it doesn't exist)
   Just _ ->
     let fromTypeCtor = TH.ConT (TH.mkName $ l1.langQualPrefix ++ sName)
         fromType = foldl AppT fromTypeCtor (TH.VarT <$> l1.defdLangParams)
         toTypeCtor = TH.ConT (TH.mkName $ l2.langQualPrefix ++ sName)
-        toTypeCore = foldl AppT toTypeCtor (TH.VarT <$> l2.defdLangParams)
-        toType = AppT (TH.ConT ''Maybe) $ AppT (TH.VarT fParam) toTypeCore
+        toType = foldl AppT toTypeCtor (TH.VarT <$> l2.defdLangParams)
      in [XlateSyncatDef{syncatName = sName,fromType,toType}]
 
 createAuto :: TypeDesc -> MaybeT Q (TH.Name -> TH.Name -> Exp)
@@ -205,11 +206,79 @@ declareType x = do
   tvs = flip TH.PlainTV () <$> xlateParams x ++ [xlateFParam x]
   holes = flip map (lefts $ xlateProds x) $ \hole ->
     let name = lowerHead hole.syncatName ++ hole.prodName
+        r = TH.VarT x.xlateFParam `AppT` hole.holeResult
+        t = foldr ArrT r hole.holeArgs
+     in (TH.mkName name, noBang, t)
+  overrides = flip map x.xlateSyncats $ \syncat ->
+    let name = lowerHead syncat.syncatName
+        r = TH.ConT ''Maybe `AppT` (TH.VarT x.xlateFParam `AppT` syncat.toType)
+     in (TH.mkName name, noBang, ArrT syncat.fromType r)
+
+declareTypeI :: XlateDef -> Q Dec
+declareTypeI x = do
+  TH.addModFinalizer $ TH.putDoc (TH.DeclDoc xlateName) $ unlines
+    [ "This type is used to parameterize the nanopass-generated translation functions @descend*I@."
+    , "It is the pure (i.e. does not require an 'Applicative') version of 'Xlate'."
+    , ""
+    , "See 'Xlate' for more detail."
+    ]
+  pure $ TH.DataD [] xlateName tvs Nothing
+    [TH.RecC xlateName $ holes ++ overrides]
+    []
+  where
+  xlateName = TH.mkName "XlateI"
+  tvs = flip TH.PlainTV () <$> xlateParams x
+  holes = flip map (lefts x.xlateProds) $ \hole ->
+    let name = lowerHead hole.syncatName ++ hole.prodName ++ "I"
         t = foldr ArrT hole.holeResult hole.holeArgs
      in (TH.mkName name, noBang, t)
-  overrides = flip map (xlateSyncats x) $ \syncat ->
-    let name = lowerHead syncat.syncatName
-     in (TH.mkName name, noBang, ArrT syncat.fromType syncat.toType)
+  overrides = flip map x.xlateSyncats $ \syncat ->
+    let name = lowerHead syncat.syncatName ++ "I"
+        r = TH.ConT ''Maybe `AppT` syncat.toType
+     in (TH.mkName name, noBang, ArrT syncat.fromType r)
+
+declareXlateLifter :: XlateDef -> Q [Dec]
+declareXlateLifter x = do
+  let liftName = TH.mkName "idXlate"
+  TH.addModFinalizer $ TH.putDoc (TH.DeclDoc liftName) $ unlines
+    [ "This function is used by Nanopass to implement the @descend\\<Syntactic Category\\>I@ functions."
+    , "It is used only to lift a pure 'XlateI' parameter into an 'Xlate'."
+    , "This way, pure translations can use the same code paths as the more general 'Control.Applicative.Applicative' translations."
+    , "Internally, it just arranges wrapping and unwrapping of t'Data.Functor.Identity.Identity', which are no-ops."
+    ]
+  let quantifier = flip TH.PlainTV TH.InferredSpec <$> x.xlateParams
+      xlateApTyCon = TH.ConT $ TH.mkName "Xlate"
+      xlateApTy = foldl AppT xlateApTyCon ((TH.VarT <$> x.xlateParams) ++ [TH.ConT ''Identity])
+      xlateIdTyCon = TH.ConT $ TH.mkName "XlateI"
+      xlateIdTy = foldl AppT xlateIdTyCon (TH.VarT <$> x.xlateParams)
+  xlateVar <- TH.newName "xlate"
+  holeMembers <- holes xlateVar
+  ovrMembers <- overrides xlateVar
+  let body = TH.RecConE (TH.mkName "Xlate") (holeMembers ++ ovrMembers)
+      clause = TH.Clause [TH.VarP xlateVar] (TH.NormalB body) []
+  pure
+    [ TH.SigD liftName $ TH.ForallT quantifier [] $
+        xlateIdTy `ArrT` xlateApTy
+    , TH.FunD liftName [clause]
+    ]
+  where
+  holes xlateVar = forM (lefts x.xlateProds) $ \hole -> do
+    let nameAp = TH.mkName $ lowerHead hole.syncatName ++ hole.prodName
+        nameId = TH.mkName $ lowerHead hole.syncatName ++ hole.prodName ++ "I"
+    subtermNames <- forM hole.holeArgs $ \_ -> do
+      TH.newName "subterm"
+    let lam = TH.LamE (TH.VarP <$> subtermNames) body
+        body = TH.ConE 'Identity `AppE` foldl AppE delegate (TH.VarE <$> subtermNames)
+        delegate = TH.VarE nameId `AppE` TH.VarE xlateVar
+    pure (nameAp, lam)
+  overrides xlateVar = forM x.xlateSyncats $ \syncat -> do
+    let nameAp = TH.mkName $ lowerHead syncat.syncatName
+        nameId = TH.mkName $ lowerHead syncat.syncatName ++ "I"
+    varName <- TH.newName "term0"
+    let lam = TH.LamE [TH.VarP varName] body
+        body = TH.InfixE (Just $ TH.ConE 'Identity) (TH.VarE '(<$>)) (Just delegate)
+        delegate = (TH.VarE nameId `AppE` TH.VarE xlateVar) `AppE` TH.VarE varName
+    pure (nameAp, lam)
 
 interpretTypeDesc :: DefdLang -> TypeDesc -> TH.Type
 interpretTypeDesc l = go
@@ -242,6 +311,7 @@ defineDescend :: DefdLang -> DefdLang -> XlateDef -> Q [Dec]
 defineDescend l1 l2 xdef = do
   fmap concat . forM xdef.xlateSyncats $ \XlateSyncatDef{syncatName} -> do
     let funName = TH.mkName $ "descend" ++ syncatName
+        funNameId = TH.mkName $ "descend" ++ syncatName ++ "I"
     TH.addModFinalizer $ TH.putDoc (TH.DeclDoc funName) $ unlines
       [ unwords
         [ "Translate syntax trees starting from"
@@ -255,6 +325,17 @@ defineDescend l1 l2 xdef = do
         , "fills holes for which nanopass could not automatcially determine a translation, and also"
         , "allows for automatic translation to be overridden."
         ]
+      ]
+    TH.addModFinalizer $ TH.putDoc (TH.DeclDoc funNameId) $ unlines
+      [ unwords
+        [ "Translate syntax trees starting from"
+        , "any t'" ++ l1.langQualPrefix ++ syncatName ++ "' of the t'" ++ show l1.defdLangName ++ "' language"
+        , "to the corresponding '" ++ l2.langQualPrefix ++ syncatName ++ "' of the t'" ++ show l2.defdLangName ++ "' language."
+        ]
+      , ""
+      , "This is the pure (i.e. no 'Applicative' required) version of '"++show funName++"'."
+      , "This version is parameterized by an t'XlateI' rather than an t'Xlate'."
+      , "See '"++show funName++"' for more details."
       ]
     xlateVar <- TH.newName "xlate"
     termVar <- TH.newName "term"
@@ -292,7 +373,10 @@ defineDescend l1 l2 xdef = do
           ]
     -- tie it all together
     let body = TH.CaseE override ovrMatches
-    let clause = TH.Clause [TH.VarP xlateVar, TH.VarP termVar] (TH.NormalB body) []
+        clause = TH.Clause [TH.VarP xlateVar, TH.VarP termVar] (TH.NormalB body) []
+    let delegateId = TH.VarE funName `AppE` (TH.VarE (TH.mkName "idXlate") `AppE` TH.VarE xlateVar)
+        bodyId = TH.InfixE (Just $ TH.VarE 'runIdentity) (TH.VarE '(.)) (Just delegateId)
+        clauseId = TH.Clause [TH.VarP xlateVar] (TH.NormalB bodyId) []
     -- generate a type signature
     let quantifier = flip TH.PlainTV TH.InferredSpec <$> xdef.xlateParams ++ [xdef.xlateFParam]
         appClass = TH.ConT ''Applicative `AppT` TH.VarT xdef.xlateFParam
@@ -303,11 +387,19 @@ defineDescend l1 l2 xdef = do
         l2ResTyCon = TH.ConT $ TH.mkName $ l2.langQualPrefix ++ syncatName
         l2ResTyCore = foldl AppT l2ResTyCon (TH.VarT <$> l2.defdLangParams)
         l2ResTy = AppT (TH.VarT xdef.xlateFParam) l2ResTyCore
+    let quantifierId = flip TH.PlainTV TH.InferredSpec <$> xdef.xlateParams
+        xlateArgTyConId = TH.ConT $ TH.mkName "XlateI"
+        xlateArgTyId = foldl AppT xlateArgTyConId (TH.VarT <$> xdef.xlateParams)
+        l2ResTyId = l2ResTyCore
     -- and emit both signature and definition
     pure
       [ TH.SigD funName $ TH.ForallT quantifier [appClass] $
           xlateArgTy `ArrT` (l1ArgTy `ArrT` l2ResTy)
       , TH.FunD funName [clause]
+      -- the "pure" (i.e. non-applicative) version
+      , TH.SigD funNameId $ TH.ForallT quantifierId [] $
+          xlateArgTyId `ArrT` (l1ArgTy `ArrT` l2ResTyId)
+      , TH.FunD funNameId [clauseId]
       ]
 
 ---------------------

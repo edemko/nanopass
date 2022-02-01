@@ -172,8 +172,15 @@ If a source language has syntactic category `σ` with the same name as the targe
 If an override returns `Nothing`, then the automatic translation will be used,
   otherwise the automatic translation is ignored in favor of the result under the `Just`.
 
-
-For the moment, there isn't a non-functor version of translation, but this is easily emulated with `unIdentity` and `pure` in the appropriate locations.
+We also generate a pure variant of the functor-based translations.
+The differences are:
+  * The type `XlateI` is generated; it is not parameterized by `f`, nor are the types of its members.
+  * The members of `XlateI` are the same as for `Xlate`, but suffixed with the letter `I`.
+  * The pure descend functions are named `descend<Syntactic Category>I`.
+    They take an `XlateI` instead of an `Xlate`, and return their results directly rather than under an `Applicative`.
+  * A function `idXlate` is generated, which takes values of `XlateI` to `Xlate`.
+    This is only used internally so that the same code paths can be used for both pure and `Applicative` translations.
+    Under the hood, this is done with appropriate wrapping/unwrapping of `Identity`, which is a no-op.
 
 So, what _can_ be auto-translated?
 If the subterms of a production don't match, there's nothing we can do, but even when they do match, we can't always generate a translation.

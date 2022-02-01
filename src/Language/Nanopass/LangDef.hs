@@ -155,7 +155,7 @@ defineLanginfo l = do
         ]
       (Nothing, Just origProg) -> unlines
         [ ""
-        , "This language was generated from the following 'deflang' program:"
+        , "This language was generated from the following 'Language.Nanopass.deflang' program:"
         , ""
         , unlines . fmap ("> " ++) . lines $ origProg
         ]

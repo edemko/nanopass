@@ -2,22 +2,6 @@ TODO
 
 ## 0.0.2.0
 
-* a pure interface for translation
-  ```
-  data XlateId funny = XlateId
-    { exprLam :: String -> [L0.Stmt funny] -> L1.Expr
-    , expr :: L0.Expr funny -> Maybe L1.Expr
-    }
-  idXlate :: XlateId funny -> Xlate funny f
-  idXlate xlate = Xlate
-    { exprLam = \x e -> Identity $ xlate.exprLam x e
-    , expr = \l0 -> Identity <$> xlate.expr l0
-    }
-
-  descendExprId :: XlateId funny -> L0.Expr funny -> L1.Expr
-  descendExprId xlate = runIdentity . exprDescend (idXlate xlate)
-  ```
-
 * generate documentation
   * the members of Xlate
 

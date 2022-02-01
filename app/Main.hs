@@ -5,8 +5,6 @@
 
 module Main where
 
-import Data.Functor.Identity
-
 import Language.Nanopass (deflang,defpass)
 import Text.Pretty.Simple (pPrint)
 
@@ -38,13 +36,13 @@ main = do
   pPrint $ compile theE
 
 compile :: L0.Expr () -> Expr
-compile = runIdentity . descendExpr xlate
+compile = descendExprI xlate
   where
-  xlate = Xlate
-    { expr = const Nothing
-    , exprLam = \var body -> pure $ case body of
+  xlate = XlateI
+    { exprI = const Nothing
+    , exprLamI = \var body -> case body of
         [] -> Lam var $ Var var
         L0.Expr () e1 : _ -> Lam var $ compile e1
         L0.Let _ body1 : _ -> Lam var $ compile body1
-    , exprNope = pure . Var
+    , exprNopeI = Var
     }
