@@ -84,10 +84,12 @@ Note that here, we got to define a `NonEmpty` list of tuples using the `({String
 Even academic authors sometimes don't avail themselves of such data structures, but we eliminated a syntactic category for free!
 
 ```
--- this no-op splice separates the two quasiquotes to that the definitions of the first are available to the second
--- declaration order can be finicky, and there may be a way I can get rid of this requirement
--- but for not I've pointed it out because I expect it to be a pitfall for people not familiar with TH
--- of course, this is not needed if your pass is defined in a separate module from the language definition
+-- This no-op splice separates the two quasiquotes so that the definitions of the
+-- first are available to the second. Declaration order can be finicky, and
+-- hopefully I can get rid of this requirement, but for now I've pointed it out
+-- because I expect it to be a pitfall for people not familiar with TH. Of course,
+-- this is not needed if your pass is defined in a separate module from the
+-- language definition.
 $(pure [])
 
 [defpass|LambdaLet :-> Lambda|]
@@ -113,7 +115,7 @@ Now consider the code savings that such an approach could provide for
   must make its way through dozens of passes!
 
 Something I especially enjoy is that all this metaprogramming generates _bog-standard_ Haskell.
-The generated code doesn't use any language extensions, and the most sophisticated typeclass is uses is `Traversable`.
+The generated code doesn't use any language extensions, and the most sophisticated typeclass it uses is `Traversable`.
 The most sophisticated thing we do is pass a record of functions through a recursion, but in all cases this record is defined at the use-site, and so my hope is that inlining and simplification will get rid of any overhead relative to to plain pattern-matching.
 My expectation is that the resulting code will be fast because it is the style of code that the compiler most understands.
 

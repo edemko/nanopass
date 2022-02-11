@@ -62,7 +62,7 @@ import qualified Text.Parse.Stupid as Stupid
 -- >    ::= $⟨UpName⟩                               # reference a syntactic category
 -- >     |  ⟨lowName⟩                               # type parameter
 -- >     |  ( ⟨Up.Name⟩ ⟨type⟩… )                   # apply a Haskell Type constructor to arguments
--- >     |  ⟨Up.Name⟩                               # same as: (⟨UpName⟩)
+-- >     |  ⟨Up.Name⟩                               # same as: (⟨Up.Name⟩)
 -- >     |  ( ⟨type⟩ ⟨type operator⟩… )             # apply common type operators (left-associative)
 -- >     |  ( ⟨Up.Name⟩ ⟨type⟩… ⟨type operator⟩… )  # same as: ((⟨UpName⟩ ⟨type⟩…) ⟨type operator⟩…)
 -- >     |  { ⟨type⟩ ⟨type⟩ ⟨type⟩… }               # tuple type
@@ -118,7 +118,7 @@ deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
 --
 -- The @idXlate@ function is used by Nanopass to translate @XlateI@ values into @Xlate@ values.
 -- This is done so that the same code paths can be used for both pure and 'Applicative' translations.
--- Under the hood, this is done with appropriate wrapping/unwrapping of 'Identity', which is a no-op.
+-- Under the hood, this is done with appropriate wrapping/unwrapping of v'Data.Functor.Identity.Identity', which is a no-op.
 --
 -- None of the functions defined by this quasiquoter need to be expoted for Nanopass to function.
 -- I expect you will not export any of these definitions directly, but instead wrap them into a complete pass, and only export that pass.
