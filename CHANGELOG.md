@@ -2,6 +2,7 @@
 
 ## 0.0.2.0 -- YYYY-mm-dd
 
+* Generate documentation for the members of `Xlate` and `XlateI`.
 * Add generation of pure variants of translation facilities to `defpass`.
 * Change `{Xlate,descend*}A` names to drop the `A`; applicative is probably the more common case.
 * Fix bug in testing for `Traversable` instance.

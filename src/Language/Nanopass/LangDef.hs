@@ -145,7 +145,8 @@ defineLanginfo l = do
     , case (l.baseDefdLang, l.originalProgram) of
       (Just l0, Just origProg) -> unlines
         [ ""
-        , "This language was generated based on the langauge t'" ++ show l0.defdLangName ++ "' using the following 'deflang' program:"
+        , "This language was generated based on the langauge t'" ++ show l0.defdLangName ++ "'"
+        , "using the following 'Language.Nanopass.deflang' program:"
         , ""
         , unlines . fmap ("> " ++) . lines $ origProg
         ]

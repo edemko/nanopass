@@ -1,14 +1,3 @@
-TODO
-
-## 0.0.2.0
-
-* generate documentation
-  * the members of Xlate
-
-
-* move the XlateDef's constructors into the xlateSyncats?
-
-
 ## 0.0.3.0
 
 * allow the user to give an allow/deny list for syncat overrides, rather than generating all overrides by default
