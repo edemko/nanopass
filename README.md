@@ -46,10 +46,10 @@ That's why we need to write a bunch of boilerplate… or have Template Haskell w
 Observe the close correspondence of the following Haskell code with the informal mathematics from before.
 
 First, we will define a syntax language of λ.
-```
+```haskell
 {-# LANGUAGE QuasiQuotes #-}
 module Lambda where
-import Data.Language.Nanopass (deflang)
+import Language.Nanopass (deflang)
 
 [deflang| Lambda
 (Expr
@@ -65,17 +65,19 @@ It's best to put each language in its own module.
 For one thing, for Nanopass to be useful, many constructor and field names are shared between languages.
 On the other, Haskell's compile times are super-linear in the size of a module but (barring full-program optimization) linear in the number of modules; since Template Haskell can generate lots of code, it's broadly good to keep its usage contained.
 
-```
+```haskell
 module LambdaLet where
-import Data.Language.Nanopass (deflang, defpass)
+import Language.Nanopass (deflang, defpass)
 import Data.Functor.Identity (Identity(runIdentity))
 import Data.List (foldl1)
 
 import qualified Lambda as L0
 
 [deflang|L0.Lambda :-> LambdaLet
-(* Expr
-  (+ Let {bind ({String $Expr} +)} {letIn $Expr} )
+(*
+  ( Expr
+    (+ Let {bind ({String $Expr} +)} {letIn $Expr} )
+  )
 )
 |]
 ```
@@ -83,7 +85,7 @@ import qualified Lambda as L0
 Note that here, we got to define a `NonEmpty` list of tuples using the `({String $Expr} +)`.
 Even academic authors sometimes don't avail themselves of such data structures, but we eliminated a syntactic category for free!
 
-```
+```haskell
 -- This no-op splice separates the two quasiquotes so that the definitions of the
 -- first are available to the second. Declaration order can be finicky, and
 -- hopefully I can get rid of this requirement, but for now I've pointed it out
@@ -92,19 +94,20 @@ Even academic authors sometimes don't avail themselves of such data structures, 
 -- language definition.
 $(pure [])
 
-[defpass|LambdaLet :-> Lambda|]
+[defpass|LambdaLet :-> L0.Lambda|]
 
-compile :: L0.Expr -> Expr
-compile = runIdentity . descendExprA xlate
+compile ∷ ∀ f. Applicative f ⇒ Expr → f L0.Expr
+compile = descendExpr xlate
   where
-  xlate :: XlateA Identity -- type signature unneeded, but included for explanatory purposes
-  xlate = XlateA
-    -- the exprLet is required because nanopass couldn't find an automatic translation
-    { exprLet = \bind body -> pure $ foldr unlet body bind
-    -- the `expr` member allows us to optionally override the default translation when necessary
-    , expr = const Nothing -- we don't need to override anything
-    }
-  unlet body (x, e) = (Lam x body) `App` e
+    xlate ∷ Xlate f -- type signature unneeded, but included for explanatory purposes
+    xlate = Xlate
+      -- the exprLet is required because nanopass couldn't find an automatic translation
+      { exprLet = \let' in' → compile $ foldr unlet in' let'
+      -- the `expr` member allows us to optionally override the default translation when necessary
+      , expr = const Nothing -- we don't need to override anything
+      }
+      where
+        unlet (x, e) body = (Lam x body) `App` e
 ```
 
 Thankfully, we didn't need to write any code to translate the `Var`, `App`, or `Lam` constructors:
