@@ -58,6 +58,15 @@ import qualified Text.Parse.Stupid as Stupid
 -- >    ::= { ⟨lowName⟩ ⟨type⟩ }
 -- >     |  ⟨type⟩
 -- >  
+-- >  syntactic category modifier
+-- >    ::= ( + ⟨syntactic category⟩… )
+-- >     |  ( - ⟨UpName⟩… )
+-- >     |  ( * ⟨UpName⟩ ⟨production modifier⟩… )
+-- >     |  ( * ( ⟨UpName⟩ ⟨production modifier⟩… )… )
+-- >  production modifier
+-- >    ::= ( + ⟨UpName⟩ ⟨subterm⟩… )
+-- >     |  ( - ⟨UpName⟩ )
+-- >  
 -- >  type
 -- >    ::= $⟨UpName⟩                               # reference a syntactic category
 -- >     |  ⟨lowName⟩                               # type parameter
@@ -312,6 +321,14 @@ parseSyncatMod (Combo "(" (Atom "-":syncatExprs)) =
   forM syncatExprs $ \case
     (Atom syncatStr) | Just sName <- fromUpname syncatStr -> pure $ DelSyncat sName
     other -> Left $ "expecting the name of a syntactic category, got:\n  " ++ Stupid.print id other
+parseSyncatMod (Combo "(" (Atom "*":Atom sStr:pModExprs))
+  | Just sName <- fromUpname sStr = do
+    pMods <- parseProdMod `mapM` pModExprs
+    pure [ModProds sName pMods]
+  | otherwise = Left $ concat
+      [ "expecting syntactic category name"
+      , ", got: ", show sStr
+      ]
 parseSyncatMod (Combo "(" (Atom "*":syncatExprs)) =
   forM syncatExprs $ \case
     (Combo "(" (Atom sStr:pModExprs))
@@ -322,7 +339,7 @@ parseSyncatMod (Combo "(" (Atom "*":syncatExprs)) =
       [ "expecting syntactic category modifier:\n"
       , "  (<SyncatName> <ctor mods>… )\n"
       , "got:\n"
-      , "  " ++ Stupid.print id other
+      , "  ", Stupid.print id other
       ]
 parseSyncatMod other = Left $ concat
   [ "expecting syntactic category modifier batch:\n"

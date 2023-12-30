@@ -315,6 +315,8 @@ reifyLang langName = do
       typeDesc <- decodeType sNames paramNames thSubtermType
       pure $ DefdSubterm thFieldName typeDesc
     pure $ DefdProd{defdProdName,defdSubterms}
+  decodeCtor _ _ (TH.NormalC defdProdName []) =
+    pure $ DefdProd{defdProdName,defdSubterms=[]}
   decodeCtor _ _ otherCtor = fail $ "corrupt production type:\n" ++ show otherCtor
   decodeType :: [TH.Name] -> [TH.Name] -> TH.Type -> Q TypeDesc
   decodeType sNames paramNames type0 = recurse type0

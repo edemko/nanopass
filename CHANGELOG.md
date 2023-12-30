@@ -1,6 +1,12 @@
 # Revision history for nanopass
 
-## 0.0.2.0 -- YYYY-mm-dd
+## 0.0.2.1 -- YYYY-mm-dd
+
+* Fix bug decoding constructors with no fields
+* Add missing "modifier" production rules to documentation
+* Allow parentheses drop when a syncat modifier has exactly one child
+
+## 0.0.2.0 -- 2022-02-11
 
 * Generate documentation for the members of `Xlate` and `XlateI`.
 * Add generation of pure variants of translation facilities to `defpass`.

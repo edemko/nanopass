@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: nanopass
-version: 0.0.2.0
+version: 0.0.2.1
 synopsis: An EDSL for creating compilers using small passes and many intermediate representations.
 description: See README
 category: Language
