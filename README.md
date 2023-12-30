@@ -49,7 +49,7 @@ First, we will define a syntax language of λ.
 ```
 {-# LANGUAGE QuasiQuotes #-}
 module Lambda where
-import Data.Language.Nanopass (deflang)
+import Language.Nanopass (deflang)
 
 [deflang| Lambda
 (Expr
@@ -67,7 +67,7 @@ On the other, Haskell's compile times are super-linear in the size of a module b
 
 ```
 module LambdaLet where
-import Data.Language.Nanopass (deflang, defpass)
+import Language.Nanopass (deflang, defpass)
 import Data.Functor.Identity (Identity(runIdentity))
 import Data.List (foldl1)
 
