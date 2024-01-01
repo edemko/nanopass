@@ -170,8 +170,8 @@ defineLanginfo l = do
 defineProduction :: ProdDef -> Define TH.Con
 defineProduction production = do
   let members = production.subtermReqs <&> \case
-        SubtermDef (Just explicitName) v -> (explicitName, v)
-        SubtermDef Nothing v -> ("un" ++ production.prodNameReq, v)
+        SubtermDef (Just explicitName) v -> ("__" ++ explicitName, v)
+        SubtermDef Nothing v -> ("__" ++ "un" ++ production.prodNameReq, v)
   let duplicateNames = (fst <$> members) \\ nub (fst <$> members)
   fields <- case duplicateNames of
     [] -> mapM defineSubterm members
@@ -311,7 +311,8 @@ reifyLang langName = do
   langBase = reverse . takeWhile (/= '.') . reverse $ langName
   decodeCtor :: [TH.Name] -> [TH.Name] -> TH.Con -> Q DefdProd
   decodeCtor sNames paramNames (TH.RecC defdProdName thFields) = do
-    defdSubterms <- forM thFields $ \(thFieldName, _, thSubtermType) -> do
+    defdSubterms <- forM thFields $ \(thFieldNameDunder, _, thSubtermType) -> do
+      thFieldName <- removeDunder thFieldNameDunder
       typeDesc <- decodeType sNames paramNames thSubtermType
       pure $ DefdSubterm thFieldName typeDesc
     pure $ DefdProd{defdProdName,defdSubterms}
@@ -501,3 +502,11 @@ extendLang l lMods = do
 
 noBang :: TH.Bang
 noBang = TH.Bang TH.NoSourceUnpackedness TH.NoSourceStrictness
+
+removeDunder :: TH.Name -> Q TH.Name
+removeDunder name = case TH.nameBase name of
+  '_':'_':str -> pure $ TH.mkName str
+  other -> fail $ concat
+    [ "corrupt subterm field name (must start with double-underscore):\n"
+    , "  ", show other
+    ]

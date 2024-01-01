@@ -15,3 +15,6 @@
 * allow user comments on productions and subterms
 
 As features start to become unmanageable, I may want to split nanopass into nanopass-boot, and a true nanopass, which is built with nanopass (i.e. nanopass-boot)
+
+
+I would like nanopass-generated types to compile even under -Wpartial-fields.
