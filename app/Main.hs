@@ -38,10 +38,10 @@ compile :: L0.Expr () -> Expr
 compile = descendExprI xlate
   where
   xlate = XlateI
-    { exprI = const Nothing
-    , exprLamI = \var body -> case body of
+    { onExprI = const Nothing
+    , onExprLamI = \var body -> case body of
         [] -> Lam var $ Var var
         L0.Expr () e1 : _ -> Lam var $ compile e1
         L0.Let _ body1 : _ -> Lam var $ compile body1
-    , exprNopeI = Var
+    , onExprNopeI = Var
     }

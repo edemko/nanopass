@@ -100,9 +100,9 @@ compile = runIdentity . descendExprA xlate
   xlate :: XlateA Identity -- type signature unneeded, but included for explanatory purposes
   xlate = XlateA
     -- the exprLet is required because nanopass couldn't find an automatic translation
-    { exprLet = \bind body -> pure $ foldr unlet body bind
+    { onExprLet = \bind body -> pure $ foldr unlet body bind
     -- the `expr` member allows us to optionally override the default translation when necessary
-    , expr = const Nothing -- we don't need to override anything
+    , onExpr = const Nothing -- we don't need to override anything
     }
   unlet body (x, e) = (Lam x body) `App` e
 ```
