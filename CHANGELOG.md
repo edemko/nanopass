@@ -1,12 +1,15 @@
 # Revision history for nanopass
 
-## 0.0.2.1 -- YYYY-mm-dd
+## 0.0.2.1 -- 2024-01-02
 
 * Fix bug decoding constructors with no fields
 * Add missing "modifier" production rules to documentation
 * Allow parentheses drop when a syncat modifier has exactly one child
 * add `on` prefix to Xlate records to avoid ambiguous records
 * require `Xlate{,I}` fields to be strict so they don't get forgotten when you write translators
+* because nanopass creates partial-fields (detectable with `-Wpartial-fields`),
+  I've decided to prefix these with double-underscore to indicate that they are not meant for use
+  beyond nanopass' internals
 
 ## 0.0.2.0 -- 2022-02-11
 
