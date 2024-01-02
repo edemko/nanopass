@@ -1,5 +1,8 @@
 # Revision history for nanopass
 
+## 0.0.3.0 -- YYYY-mm-dd
+
+
 ## 0.0.2.1 -- 2024-01-02
 
 * Fix bug decoding constructors with no fields

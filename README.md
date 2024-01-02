@@ -1,6 +1,6 @@
 # Nanopass in Haskell
 
-The original [Nanopass Compiler Framework](https://nanopass.org/) is an domain-specific language embedded in Racket (Scheme), which aids in the construction of maintainable compilers.
+The original [Nanopass Compiler Framework](https://nanopass.org/) is a domain-specific language embedded in Racket (Scheme), which aids in the construction of maintainable compilers.
 Its advantages stem from its ability to:
   * concisely define a series (in fact, a graph) of slightly-different languages
     by describing _modifications_ to other intermediate languages, and

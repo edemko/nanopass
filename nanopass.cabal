@@ -1,17 +1,23 @@
 cabal-version: 3.0
 name: nanopass
 version: 0.0.2.1
-synopsis: An EDSL for creating compilers using small passes and many intermediate representations.
-description: See README
+synopsis: Create compilers using small passes and many intermediate representations.
+description:
+  Uses Template Haskell to facilitate using a vast number of intermediate representations.
+  On the one hand, it can generate data types for syntax trees based on their relationships.
+  Further, generates the boilerplate for writing transformations between related syntax trees.
+  
+  See README.md for more details.
 category: Language
 homepage: https://github.com/edemko/nanopass
 bug-reports: https://github.com/edemko/nanopass/issues
-author: Eric Demko
+author: Marseille Bounchard
 maintainer: zankoku.okuno@gmail.com
-copyright: 2022 Eric Demko
+copyright: 2022 Marseille Bounchard
 license: BSD-3-Clause
 license-file: LICENSE
-extra-source-files: README.md, CHANGELOG.md, LICENSE
+extra-source-files:
+extra-doc-files: README.md, CHANGELOG.md, LICENSE
 
 source-repository head
   type: git
@@ -49,4 +55,3 @@ executable dumb-nanopass-example
   default-language: Haskell2010
   ghc-options:
     -Wall -Wunticked-promoted-constructors
-    -O2 -threaded
