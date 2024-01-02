@@ -27,10 +27,10 @@ library
     Language.Nanopass.Xlate
     Text.Parse.Stupid
   build-depends:
-    , base >=4.11.1 && <4.17
+    , base >=4.11.1 && <4.18
     , containers >=0.6 && <0.7
     , mtl >=2.2 && <2.3
-    , template-haskell >=2.18 && <2.19
+    , template-haskell >=2.18 && <2.20
     , transformers >=0.5.6 && <0.6
   default-language: Haskell2010
   ghc-options: -Wall -Wunticked-promoted-constructors
@@ -41,10 +41,10 @@ executable dumb-nanopass-example
   other-modules:
     Lang
   build-depends:
-    , base >=4.11.1 && <4.17
+    , base >=4.11.1 && <4.18
     , nanopass
     , pretty-simple >=4 && <4.2
-    , template-haskell >=2.18 && <2.19
+    , template-haskell >=2.18 && <2.20
     , transformers >=0.5.6 && <0.6
   default-language: Haskell2010
   ghc-options:
