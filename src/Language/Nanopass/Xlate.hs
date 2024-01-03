@@ -16,6 +16,7 @@ module Language.Nanopass.Xlate
   ) where
 
 import Language.Nanopass.LangDef
+import Nanopass.Internal.LangDef
 
 import Control.Monad (forM)
 import Control.Monad.Trans.Maybe (MaybeT(..))
@@ -64,18 +65,18 @@ data XlateDef = XlateDef
   }
 type XlateProd = Either XlateHoleDef XlateAuto
 data XlateAuto = XlateAuto
-  { syncatName :: String
-  , prodName :: String
+  { syncatName :: UpName
+  , prodName :: UpName
   , autoArgs :: [TH.Name -> TH.Name -> Exp] -- functions from xlate and subterm variables to auto-translator
   }
 data XlateHoleDef = XlateHoleDef
-  { syncatName :: String -- the name of the syntactic category shared by source and target
-  , prodName :: String -- the name of the source production
+  { syncatName :: UpName -- the name of the syntactic category shared by source and target
+  , prodName :: UpName -- the name of the source production
   , holeArgs :: [TH.Type] -- the types of the subterms of the source production
   , holeResult :: TH.Type -- the type of the target syntactic category that must be supplied
   }
 data XlateSyncatDef = XlateSyncatDef
-  { syncatName :: String -- the name of the syntactic category shared by source and target
+  { syncatName :: UpName -- the name of the syntactic category shared by source and target
   , fromType :: TH.Type -- parameterized type of the source language at this syntactic category
   , toType :: TH.Type -- parameterized type of the target language at this syntactic category
   }
@@ -97,19 +98,19 @@ xlateDef l1 l2 = do
     , xlateTo = l2
     }
 
-detectHoles :: DefdLang -> DefdLang -> (String, DefdSyncatType) -> Q [Either XlateHoleDef XlateAuto]
+detectHoles :: DefdLang -> DefdLang -> (UpName, DefdSyncatType) -> Q [Either XlateHoleDef XlateAuto]
 detectHoles l1 l2 (sName, s1) = case Map.lookup sName l2.defdSyncats of
   Nothing -> pure [] -- no translation required: no l2 ctor can use the a type corresponding to this l1 type (because it doesn't exist)
   Just s2 -> fmap concat $ forM (Map.toAscList s1.defdProds) $ detectHoleCtors s2
   where
-  detectHoleCtors :: DefdSyncatType -> (String, DefdProd) -> Q [Either XlateHoleDef XlateAuto]
+  detectHoleCtors :: DefdSyncatType -> (UpName, DefdProd) -> Q [Either XlateHoleDef XlateAuto]
   detectHoleCtors s2 (pName, prod1) = case Map.lookup pName s2.defdProds of
     -- a required hole, because there is no constructor to target
     Nothing -> pure [Left $ createHole pName prod1]
     Just prod2
       -- no custom translation required: the arguments of one constructor match up with the arguments of the other
-      | tys1 <- (defdSubtermType <$> prod1.defdSubterms)
-      , tys2 <- (defdSubtermType <$> prod2.defdSubterms)
+      | tys1 <- prod1.defdSubterms
+      , tys2 <- prod2.defdSubterms
       , tys1 == tys2 -> runMaybeT (createAuto `mapM` tys1) >>= \case
           Nothing -> pure [Left $ createHole pName prod1] -- a required hole because no auto-translation possible
           Just autoArgs -> do
@@ -118,24 +119,24 @@ detectHoles l1 l2 (sName, s1) = case Map.lookup sName l2.defdSyncats of
       | otherwise  -> pure [Left $ createHole pName prod1]
   createHole pName prod1 =
     let holeArgs = flip map (defdSubterms prod1) $ \subterm ->
-          interpretTypeDesc l1 subterm.defdSubtermType
-        holeCtor = TH.ConT (TH.mkName $ l2.langQualPrefix ++ sName)
+          interpretTypeDesc l1 subterm
+        holeCtor = TH.ConT (TH.mkName $ fromUpDotName (upDotChBase l2.defdLangName sName))
         holeResult = foldl AppT holeCtor (TH.VarT <$> l2.defdLangParams)
      in XlateHoleDef{syncatName=sName,prodName=pName,holeArgs,holeResult}
 
-detectOverrides :: DefdLang -> DefdLang -> (String, DefdSyncatType) -> [XlateSyncatDef]
+detectOverrides :: DefdLang -> DefdLang -> (UpName, DefdSyncatType) -> [XlateSyncatDef]
 detectOverrides l1 l2 (sName, _) = case Map.lookup sName l2.defdSyncats of
   Nothing -> [] -- no translation required: no l2 ctor can use the a type corresponding to this l1 type (because it doesn't exist)
   Just _ ->
-    let fromTypeCtor = TH.ConT (TH.mkName $ l1.langQualPrefix ++ sName)
+    let fromTypeCtor = TH.ConT (TH.mkName $ fromUpDotName (upDotChBase l1.defdLangName sName))
         fromType = foldl AppT fromTypeCtor (TH.VarT <$> l1.defdLangParams)
-        toTypeCtor = TH.ConT (TH.mkName $ l2.langQualPrefix ++ sName)
+        toTypeCtor = TH.ConT (TH.mkName $ fromUpDotName (upDotChBase l2.defdLangName sName))
         toType = foldl AppT toTypeCtor (TH.VarT <$> l2.defdLangParams)
      in [XlateSyncatDef{syncatName = sName,fromType,toType}]
 
 createAuto :: TypeDesc -> MaybeT Q (TH.Name -> TH.Name -> Exp)
 createAuto (RecursiveType sName) = do
-  let repName = TH.mkName $ "descend" ++ sName
+  let repName = TH.mkName $ "descend" ++ fromUpName sName
       auto xlateVar argVar = VarE repName `AppE` VarE xlateVar `AppE` VarE argVar
   pure auto
 createAuto (VarType _) = do
@@ -202,25 +203,25 @@ declareType x = do
     , "    When no override is needed, these members can be initialized with 'const Nothing'."
     ]
   holes <- forM (lefts $ xlateProds x) $ \hole -> do
-    let name = TH.mkName $ "on" ++ hole.syncatName ++ hole.prodName
+    let name = TH.mkName $ "on" ++ fromUpName hole.syncatName ++ fromUpName hole.prodName
         r = TH.VarT x.xlateFParam `AppT` hole.holeResult
         t = foldr ArrT r hole.holeArgs
     TH.addModFinalizer $ TH.putDoc (TH.DeclDoc name) $ unlines
       [ "No automatic translation for"
       , concat
-        [ "the v'", x.xlateFrom.langQualPrefix ++ hole.prodName, "' production "
-        , "of t'", x.xlateFrom.langQualPrefix ++ hole.syncatName, "'"
+        [ "the v'", fromUpDotName (upDotChBase x.xlateFrom.defdLangName hole.prodName), "' production "
+        , "of t'", fromUpDotName (upDotChBase x.xlateFrom.defdLangName hole.syncatName), "'"
         ]
       , "could be generated by Nanopass."
       ]
     pure (name, bang, t)
   overrides <- forM x.xlateSyncats $ \syncat -> do
-    let name = TH.mkName $ "on" ++ syncat.syncatName
+    let name = TH.mkName $ "on" ++ fromUpName syncat.syncatName
         r = TH.ConT ''Maybe `AppT` (TH.VarT x.xlateFParam `AppT` syncat.toType)
     TH.addModFinalizer $ TH.putDoc (TH.DeclDoc name) $ unlines
       [ "This member allows you to override the default translation for"
       , unwords
-        [ "The", "t'" ++ x.xlateFrom.langQualPrefix ++ syncat.syncatName ++ "'"
+        [ "The", "t'" ++ fromUpDotName (upDotChBase x.xlateFrom.defdLangName syncat.syncatName) ++ "'"
         , "syntactic category."
         ]
       , "Produce a 'Just' value to override the automatic translation."
@@ -243,24 +244,24 @@ declareTypeI x = do
     , "See 'Xlate' for more detail."
     ]
   holes <- forM (lefts x.xlateProds) $ \hole -> do
-    let name = TH.mkName $ "on" ++ hole.syncatName ++ hole.prodName ++ "I"
+    let name = TH.mkName $ "on" ++ fromUpName hole.syncatName ++ fromUpName hole.prodName ++ "I"
         t = foldr ArrT hole.holeResult hole.holeArgs
     TH.addModFinalizer $ TH.putDoc (TH.DeclDoc name) $ unlines
       [ "No automatic translation for"
       , concat
-        [ "the v'", x.xlateFrom.langQualPrefix ++ hole.prodName, "' production "
-        , "of t'", x.xlateFrom.langQualPrefix ++ hole.syncatName, "'"
+        [ "the v'", fromUpDotName (upDotChBase x.xlateFrom.defdLangName hole.prodName), "' production "
+        , "of t'", fromUpDotName (upDotChBase x.xlateFrom.defdLangName hole.syncatName), "'"
         ]
       , "could be generated by Nanopass."
       ]
     pure (name, bang, t)
   overrides <- forM x.xlateSyncats $ \syncat -> do
-    let name = TH.mkName $ "on" ++ syncat.syncatName ++ "I"
+    let name = TH.mkName $ "on" ++ fromUpName syncat.syncatName ++ "I"
         r = TH.ConT ''Maybe `AppT` syncat.toType
     TH.addModFinalizer $ TH.putDoc (TH.DeclDoc name) $ unlines
       [ "This member allows you to override the default translation for"
       , unwords
-        [ "The", "t'" ++ x.xlateFrom.langQualPrefix ++ syncat.syncatName ++ "'"
+        [ "The", "t'" ++ fromUpDotName (upDotChBase x.xlateFrom.defdLangName syncat.syncatName) ++ "'"
         , "syntactic category."
         ]
       , "Produce a 'Just' value to override the automatic translation."
@@ -300,8 +301,8 @@ declareXlateLifter x = do
     ]
   where
   holes xlateVar = forM (lefts x.xlateProds) $ \hole -> do
-    let nameAp = TH.mkName $ "on" ++ hole.syncatName ++ hole.prodName
-        nameId = TH.mkName $ "on" ++ hole.syncatName ++ hole.prodName ++ "I"
+    let nameAp = TH.mkName $ "on" ++ fromUpName hole.syncatName ++ fromUpName hole.prodName
+        nameId = TH.mkName $ "on" ++ fromUpName hole.syncatName ++ fromUpName hole.prodName ++ "I"
     subtermNames <- forM hole.holeArgs $ \_ -> do
       TH.newName "subterm"
     let lam = TH.LamE (TH.VarP <$> subtermNames) body
@@ -309,8 +310,8 @@ declareXlateLifter x = do
         delegate = TH.VarE nameId `AppE` TH.VarE xlateVar
     pure (nameAp, lam)
   overrides xlateVar = forM x.xlateSyncats $ \syncat -> do
-    let nameAp = TH.mkName $ "on" ++ syncat.syncatName
-        nameId = TH.mkName $ "on" ++ syncat.syncatName ++ "I"
+    let nameAp = TH.mkName $ "on" ++ fromUpName syncat.syncatName
+        nameId = TH.mkName $ "on" ++ fromUpName syncat.syncatName ++ "I"
     varName <- TH.newName "term0"
     let lam = TH.LamE [TH.VarP varName] body
         body = TH.InfixE (Just $ TH.ConE 'Identity) (TH.VarE '(<$>)) (Just delegate)
@@ -321,7 +322,7 @@ interpretTypeDesc :: DefdLang -> TypeDesc -> TH.Type
 interpretTypeDesc l = go
   where
   go (RecursiveType sName) =
-    let syncatCtor = TH.ConT (TH.mkName $ l.langQualPrefix ++ sName)
+    let syncatCtor = TH.ConT (TH.mkName . fromUpDotName $ upDotChBase l.defdLangName sName)
      in foldl AppT syncatCtor (TH.VarT <$> l.defdLangParams)
   go (VarType vName) = TH.VarT vName
   go (CtorType thName argDescs) = foldl AppT (TH.ConT thName) (go <$> argDescs)
@@ -347,13 +348,13 @@ interpretTypeDesc l = go
 defineDescend :: DefdLang -> DefdLang -> XlateDef -> Q [Dec]
 defineDescend l1 l2 xdef = do
   fmap concat . forM xdef.xlateSyncats $ \XlateSyncatDef{syncatName} -> do
-    let funName = TH.mkName $ "descend" ++ syncatName
-        funNameId = TH.mkName $ "descend" ++ syncatName ++ "I"
+    let funName = TH.mkName $ "descend" ++ fromUpName syncatName
+        funNameId = TH.mkName $ "descend" ++ fromUpName syncatName ++ "I"
     TH.addModFinalizer $ TH.putDoc (TH.DeclDoc funName) $ unlines
       [ unwords
         [ "Translate syntax trees starting from"
-        , "any t'" ++ l1.langQualPrefix ++ syncatName ++ "' of the t'" ++ show l1.defdLangName ++ "' language"
-        , "to the corresponding '" ++ l2.langQualPrefix ++ syncatName ++ "' of the t'" ++ show l2.defdLangName ++ "' language."
+        , "any t'" ++ fromUpDotName (upDotChBase l1.defdLangName syncatName) ++ "' of the t'" ++ show l1.defdLangNameTH ++ "' language"
+        , "to the corresponding '" ++ fromUpDotName (upDotChBase l2.defdLangName syncatName) ++ "' of the t'" ++ show l2.defdLangNameTH ++ "' language."
         ]
       , ""
       , "Some (hopefully most) of this function was automatically generated by nanopass."
@@ -366,8 +367,8 @@ defineDescend l1 l2 xdef = do
     TH.addModFinalizer $ TH.putDoc (TH.DeclDoc funNameId) $ unlines
       [ unwords
         [ "Translate syntax trees starting from"
-        , "any t'" ++ l1.langQualPrefix ++ syncatName ++ "' of the t'" ++ show l1.defdLangName ++ "' language"
-        , "to the corresponding '" ++ l2.langQualPrefix ++ syncatName ++ "' of the t'" ++ show l2.defdLangName ++ "' language."
+        , "any t'" ++ fromUpDotName (upDotChBase l1.defdLangName syncatName) ++ "' of the t'" ++ show l1.defdLangNameTH ++ "' language"
+        , "to the corresponding '" ++ fromUpDotName (upDotChBase l2.defdLangName syncatName) ++ "' of the t'" ++ show l2.defdLangNameTH ++ "' language."
         ]
       , ""
       , "This is the pure (i.e. no 'Applicative' required) version of '"++show funName++"'."
@@ -378,21 +379,20 @@ defineDescend l1 l2 xdef = do
     termVar <- TH.newName "term"
     -- define the automatic case matching
     autoMatches <- case Map.lookup syncatName l1.defdSyncats of
-      Nothing -> errorWithoutStackTrace $ "nanopass internal error: failed to find a source syncat that appears as an override: " ++ syncatName
+      Nothing -> errorWithoutStackTrace $ "nanopass internal error: failed to find a source syncat that appears as an override: " ++ fromUpName syncatName
       Just DefdSyncatType{defdProds} -> do
         -- go through all the productions for this syntactic category's type
         forM (Map.toAscList defdProds) $ \(_, prod) -> do
-          let pName = TH.nameBase prod.defdProdName
-          args <- (TH.newName . TH.nameBase . defdSubtermName) `mapM` prod.defdSubterms
-          let pat = TH.ConP prod.defdProdName [] (TH.VarP <$> args)
-          let body = case findAuto syncatName pName xdef.xlateProds of
+          args <- TH.newName `mapM` take (length prod.defdSubterms) base26
+          let pat = TH.ConP prod.defdProdNameTH [] (TH.VarP <$> args)
+          let body = case findAuto syncatName prod.defdProdName xdef.xlateProds of
                 -- if this production has a hole, call the hole
                 Just (Left _) ->
-                  let f = TH.mkName $ "on" ++ syncatName ++ pName
+                  let f = TH.mkName $ "on" ++ fromUpName syncatName ++ fromUpName prod.defdProdName
                       recurse = VarE f `AppE` VarE xlateVar
                    in foldl AppE recurse (VarE <$> args)
                 Just (Right auto) ->
-                  let e0 = VarE 'pure `AppE` TH.ConE (TH.mkName $ l2.langQualPrefix ++ pName)
+                  let e0 = VarE 'pure `AppE` TH.ConE (TH.mkName . fromUpDotName $ upDotChBase l2.defdLangName prod.defdProdName)
                       iAppE a b = TH.InfixE (Just a) (VarE '(<*>)) (Just b)
                       es = zipWith ($) (auto.autoArgs <&> ($ xlateVar)) args
                    in foldl iAppE e0 es
@@ -401,7 +401,7 @@ defineDescend l1 l2 xdef = do
     let autoBody = TH.CaseE (VarE termVar) autoMatches
     -- define the case match on the result of the override
     termVar' <- TH.newName "term"
-    let override = VarE (TH.mkName $ "on" ++ syncatName)
+    let override = VarE (TH.mkName $ "on" ++ fromUpName syncatName)
                    `AppE` (VarE xlateVar)
                    `AppE` (VarE termVar)
         ovrMatches =
@@ -419,9 +419,9 @@ defineDescend l1 l2 xdef = do
         appClass = TH.ConT ''Applicative `AppT` TH.VarT xdef.xlateFParam
         xlateArgTyCon = TH.ConT $ TH.mkName "Xlate"
         xlateArgTy = foldl AppT xlateArgTyCon (TH.VarT <$> xdef.xlateParams ++ [xdef.xlateFParam])
-        l1ArgTyCon = TH.ConT $ TH.mkName $ l1.langQualPrefix ++ syncatName
+        l1ArgTyCon = TH.ConT $ TH.mkName . fromUpDotName $ upDotChBase l1.defdLangName syncatName
         l1ArgTy = foldl AppT l1ArgTyCon (TH.VarT <$> l1.defdLangParams)
-        l2ResTyCon = TH.ConT $ TH.mkName $ l2.langQualPrefix ++ syncatName
+        l2ResTyCon = TH.ConT $ TH.mkName . fromUpDotName $ upDotChBase l2.defdLangName syncatName
         l2ResTyCore = foldl AppT l2ResTyCon (TH.VarT <$> l2.defdLangParams)
         l2ResTy = AppT (TH.VarT xdef.xlateFParam) l2ResTyCore
     let quantifierId = flip TH.PlainTV TH.InferredSpec <$> xdef.xlateParams
@@ -462,7 +462,7 @@ containsGrammar (NonEmptyType t) = containsGrammar t
 containsGrammar (TupleType t1 t2 ts) = any containsGrammar (t1:t2:ts)
 containsGrammar (MapType t1 t2) = containsGrammar t1 || containsGrammar t2
 
-findAuto :: String -> String -> [XlateProd] -> Maybe XlateProd
+findAuto :: UpName -> UpName -> [XlateProd] -> Maybe XlateProd
 findAuto sName pName autosHoles = case filter f autosHoles of
   [] -> Nothing
   x:_ -> Just x
@@ -473,3 +473,8 @@ findAuto sName pName autosHoles = case filter f autosHoles of
 
 hoistNothing :: Monad m => MaybeT m a
 hoistNothing = MaybeT $ pure Nothing
+
+base26 :: [String]
+base26 = concat $ digits <$> ([0..] :: [Int])
+  where
+  digits n = (:) <$> ['a'..'z'] <*> (if n == 0 then pure "" else digits (n - 1))

@@ -7,8 +7,9 @@ module Language.Nanopass.QQ
   , defpass
   ) where
 
-import Data.Char
+
 import Language.Nanopass.LangDef
+import Nanopass.Internal.LangDef
 import Prelude hiding (mod)
 
 
@@ -152,10 +153,10 @@ defpass = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
       Left err -> fail err
   bad ctx _ = fail $ "`defpass` quasiquoter cannot be used in a " ++ ctx ++ "context,\n\
                      \it can only appear as part of declarations."
-  parseDefPass :: [Sexpr String] -> Either String (String, String)
+  parseDefPass :: [Sexpr String] -> Either String (UpDotName, UpDotName)
   parseDefPass [Atom l1, Atom ":->", Atom l2]
-    | Just l1Name <- fromUpdotname l1
-    , Just l2Name <- fromUpdotname l2
+    | Just l1Name <- toUpDotName l1
+    , Just l2Name <- toUpDotName l2
       = Right (l1Name, l2Name)
   parseDefPass _ = Left "expecting two language names, separated by :->"
 
@@ -176,10 +177,10 @@ parseDefBaseOrExt originalText (langName:rest) = case rest of
   _ -> Left <$> parseLangDef originalText langName [] rest
 parseDefBaseOrExt _ _ = Left $ "expecting a langauge name"
 
-parseParams :: Sexpr String -> Either String [String]
+parseParams :: Sexpr String -> Either String [LowName]
 parseParams (Combo "(" params) = parseParam `mapM` params
   where
-  parseParam (Atom str) | Just param <- fromLowername str = Right param
+  parseParam (Atom str) | Just param <- toLowName str = Right param
   parseParam other = Left $ "expecting type parameter (lowercase symbol), got: " ++ show other
 parseParams other = Left $ concat
   [ "expecting parameter list:\n"
@@ -188,7 +189,7 @@ parseParams other = Left $ concat
   , "  " ++ show other
   ]
 
-parseLangDef :: Maybe String -> Sexpr String -> [String] -> [Sexpr String] -> Either String LangDef
+parseLangDef :: Maybe String -> Sexpr String -> [LowName] -> [Sexpr String] -> Either String LangDef
 parseLangDef originalProgram nameExpr langParamReqs syncatExprs = do
   langNameReq <- parseLangName nameExpr
   syncatReqs <- parseSyncat `mapM` syncatExprs
@@ -200,14 +201,14 @@ parseLangDef originalProgram nameExpr langParamReqs syncatExprs = do
     , baseDefdLang = Nothing
     }
 
-parseLangName :: Sexpr String -> Either String String
-parseLangName (Atom str) | Just str' <- fromUpname str = pure str'
+parseLangName :: Sexpr String -> Either String UpName
+parseLangName (Atom str) | Just str' <- toUpName str = pure str'
 parseLangName _ = Left "language name must be an UpCase alphanumeric symbol"
 
 parseSyncat :: Sexpr String -> Either String SyncatDef
 parseSyncat (Combo "(" (nameExpr:prodExprs)) = do
   sName <- case nameExpr of
-    (Atom nameStr) | Just sName <- fromUpname nameStr -> pure sName
+    (Atom nameStr) | Just sName <- toUpName nameStr -> pure sName
     _ -> Left $ concat
       [ "expecting an uppercase name of a syntactic category, got:\n"
       , "  " ++ Stupid.print id nameExpr
@@ -223,7 +224,7 @@ parseSyncat other = Left $ concat
 
 parseProd :: Sexpr String -> Either String ProdDef
 parseProd (Combo "(" (Atom prodStr:subtermExprs))
-  | Just prodName <- fromUpname prodStr = do
+  | Just prodName <- toUpName prodStr = do
     subterms <- parseSubterm `mapM` subtermExprs
     pure $ ProdDef prodName subterms
 parseProd other = Left $ concat
@@ -233,13 +234,11 @@ parseProd other = Left $ concat
   , "  " ++ Stupid.print id other
   ]
 
-parseSubterm :: Sexpr String -> Either String SubtermDef
+parseSubterm :: Sexpr String -> Either String TypeDesc
 parseSubterm (Combo "{" [Atom fieldStr, typeExpr])
-  | Just fieldName <- fromLowername fieldStr = do
-    typeDesc <- parseType typeExpr
-    pure $ SubtermDef (Just fieldName) typeDesc
+  | Just fieldName <- toLowName fieldStr = parseType typeExpr
 parseSubterm typeEexpr = case parseType typeEexpr of
-  Right typeDesc -> pure $ SubtermDef Nothing typeDesc
+  Right typeDesc -> pure typeDesc
   Left errTy -> Left $ concat
     [ "expecting a subterm definition:\n"
     , "     {<fieldName> <type>}\n"
@@ -251,18 +250,18 @@ parseSubterm typeEexpr = case parseType typeEexpr of
 parseType :: Sexpr String -> Either String TypeDesc
 parseType (Atom str)
   | '$':str' <- str
-  , Just mutrec <- fromUpname str'
+  , Just mutrec <- toUpName str'
     = pure $ RecursiveType mutrec
-  | Just tyvar <- fromLowername str
-    = pure $ VarType (TH.mkName tyvar)
-  | Just ctorName <- fromUpdotname str = pure $ CtorType (TH.mkName ctorName) []
+  | Just tyvar <- toLowName str
+    = pure $ VarType (TH.mkName $ fromLowName tyvar)
+  | Just ctorName <- toUpDotName str = pure $ CtorType (TH.mkName $ fromUpDotName ctorName) []
 parseType (Combo "(" subexprs)
   | Just (innerExpr, modifier) <- fromShortcut subexprs = do
       innerType <- parseType innerExpr
       pure $ modifier innerType
   | Just (tycon, argExprs) <- fromTycon subexprs = do
     args <- parseType `mapM` argExprs
-    pure $ CtorType (TH.mkName tycon) args
+    pure $ CtorType (TH.mkName $ fromUpDotName tycon) args
 parseType (Combo "[" subexprs)
   | Just (lhsExpr, rhsExpr) <- fromMapType subexprs = do
     lhs <- parseType lhsExpr
@@ -297,7 +296,7 @@ parseType other = Left $ concat
 ------ Language Extensions ------
 ---------------------------------
 
-parseLangMod :: Maybe String -> Sexpr String -> Sexpr String -> [String] -> [Sexpr String] -> Either String LangMod
+parseLangMod :: Maybe String -> Sexpr String -> Sexpr String -> [LowName] -> [Sexpr String] -> Either String LangMod
 parseLangMod originalModProgram baseExpr newExpr newParamReqs modExprs = do
   baseLangReq <- parseBaseLangName baseExpr
   newLangReq <- parseLangName newExpr
@@ -310,8 +309,8 @@ parseLangMod originalModProgram baseExpr newExpr newParamReqs modExprs = do
     , originalModProgram
     }
 
-parseBaseLangName :: Sexpr String -> Either String String
-parseBaseLangName (Atom str) | Just str' <- fromUpdotname str = pure str'
+parseBaseLangName :: Sexpr String -> Either String UpDotName
+parseBaseLangName (Atom str) | Just str' <- toUpDotName str = pure str'
 parseBaseLangName _ = Left "base language name must be a non-empty list of dot-separated UpCase alphanumeric symbol"
 
 parseSyncatMod :: Sexpr String -> Either String [SyncatMod]
@@ -319,10 +318,10 @@ parseSyncatMod (Combo "(" (Atom "+":syncatExprs)) = do
   (fmap AddSyncat . parseSyncat) `mapM` syncatExprs
 parseSyncatMod (Combo "(" (Atom "-":syncatExprs)) =
   forM syncatExprs $ \case
-    (Atom syncatStr) | Just sName <- fromUpname syncatStr -> pure $ DelSyncat sName
+    (Atom syncatStr) | Just sName <- toUpName syncatStr -> pure $ DelSyncat sName
     other -> Left $ "expecting the name of a syntactic category, got:\n  " ++ Stupid.print id other
 parseSyncatMod (Combo "(" (Atom "*":Atom sStr:pModExprs))
-  | Just sName <- fromUpname sStr = do
+  | Just sName <- toUpName sStr = do
     pMods <- parseProdMod `mapM` pModExprs
     pure [ModProds sName pMods]
   | otherwise = Left $ concat
@@ -332,7 +331,7 @@ parseSyncatMod (Combo "(" (Atom "*":Atom sStr:pModExprs))
 parseSyncatMod (Combo "(" (Atom "*":syncatExprs)) =
   forM syncatExprs $ \case
     (Combo "(" (Atom sStr:pModExprs))
-      | Just sName <- fromUpname sStr -> do
+      | Just sName <- toUpName sStr -> do
         pMods <- parseProdMod `mapM` pModExprs
         pure $ ModProds sName pMods
     other -> Left $ concat
@@ -352,11 +351,11 @@ parseSyncatMod other = Left $ concat
 
 parseProdMod :: Sexpr String -> Either String ProdMod
 parseProdMod (Combo "(" (Atom "+":Atom prodStr:subtermExprs))
-  | Just prodName <- fromUpname prodStr = do
+  | Just prodName <- toUpName prodStr = do
     subterms <- parseSubterm `mapM` subtermExprs
     pure $ AddProd $ ProdDef prodName subterms
 parseProdMod (Combo "(" [Atom "-", Atom prodStr])
-  | Just prodName <- fromUpname prodStr = pure $ DelProd prodName
+  | Just prodName <- toUpName prodStr = pure $ DelProd prodName
 parseProdMod other = Left $ concat
   [ "expecting a contructor modifier:\n"
   , "  (+ <CtorName> <subterm>… )\n"
@@ -369,9 +368,9 @@ parseProdMod other = Left $ concat
 ------ Pattern Match Helpers ------
 -----------------------------------
 
-fromTycon :: [Sexpr String] -> Maybe (String, [Sexpr String])
+fromTycon :: [Sexpr String] -> Maybe (UpDotName, [Sexpr String])
 fromTycon (Atom tyconName : argExprs) = do
-  tycon <- fromUpdotname tyconName
+  tycon <- toUpDotName tyconName
   pure (tycon, argExprs)
 fromTycon _ = Nothing
 
@@ -407,23 +406,3 @@ fromMapType exprs = case break isArrow exprs of
   isArrow (Atom ":->") = True
   isArrow _ = False
 
-fromUpdotname :: String -> Maybe String
-fromUpdotname inp0 = loop inp0
-  where
-  loop inp = case break (== '.') inp of
-    ([], _) -> Nothing -- no leading dot (or empty string)
-    (_, ".") -> Nothing -- no trailing dot
-    (_, []) -> Just inp0 -- no more dots
-    (_, _:rest) -> loop rest
-
-
-fromUpname :: String -> Maybe String
-fromUpname (c:cs) | isUpper c && all isAlphaNumderscore cs = Just (c:cs)
-fromUpname _ = Nothing
-
-fromLowername :: String -> Maybe String
-fromLowername (c:cs) | isLower c && all isAlphaNumderscore cs = Just (c:cs)
-fromLowername _ = Nothing
-
-isAlphaNumderscore :: Char -> Bool
-isAlphaNumderscore c = isAlphaNum c || c == '_'

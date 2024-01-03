@@ -27,6 +27,9 @@ library
   hs-source-dirs: src
   exposed-modules:
     Language.Nanopass
+    Nanopass.Internal
+    Nanopass.Internal.Parser
+    Nanopass.Internal.LangDef
   other-modules:
     Language.Nanopass.LangDef
     Language.Nanopass.QQ
@@ -35,7 +38,9 @@ library
   build-depends:
     , base >=4.11.1 && <4.19
     , containers >=0.6 && <0.7
+    , megaparsec >=9.2 && <9.3
     , mtl >=2.2 && <2.4
+    , sexpr-parser >=0.2.2.0 && <0.3
     , template-haskell >=2.18 && <2.21
     , transformers >=0.5.6 && <0.7
   default-language: Haskell2010
