@@ -29,7 +29,7 @@ library
     Language.Nanopass
     Nanopass.Internal
     Nanopass.Internal.Parser
-    Nanopass.Internal.LangDef
+    Nanopass.Internal.Representation
   other-modules:
     Language.Nanopass.LangDef
     Language.Nanopass.QQ
@@ -44,7 +44,7 @@ library
     , template-haskell >=2.18 && <2.21
     , transformers >=0.5.6 && <0.7
   default-language: Haskell2010
-  ghc-options: -Wall -Wunticked-promoted-constructors
+  ghc-options: -Wall -Wpartial-fields -Wunticked-promoted-constructors
 
 executable dumb-nanopass-example
   hs-source-dirs: app
@@ -59,4 +59,4 @@ executable dumb-nanopass-example
     , transformers >=0.5.6 && <0.7
   default-language: Haskell2010
   ghc-options:
-    -Wall -Wunticked-promoted-constructors
+    -Wall -Wpartial-fields -Wunticked-promoted-constructors

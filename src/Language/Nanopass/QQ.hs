@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE TupleSections #-}
 
 module Language.Nanopass.QQ
@@ -9,17 +10,19 @@ module Language.Nanopass.QQ
 
 
 import Language.Nanopass.LangDef
-import Nanopass.Internal.LangDef
+import Nanopass.Internal.Representation
 import Prelude hiding (mod)
 
 
 import Control.Monad (forM)
+import Data.Functor ((<&>))
 import Language.Haskell.TH (Q, Dec)
 import Language.Haskell.TH.Quote (QuasiQuoter(..))
 import Language.Nanopass.Xlate (mkXlate)
 import Text.Parse.Stupid (Sexpr(..))
 
 
+import qualified Data.Map as Map
 import qualified Language.Haskell.TH as TH
 import qualified Text.Parse.Stupid as Stupid
 
@@ -164,7 +167,7 @@ defpass = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
 ------ Language Definitions ------
 ----------------------------------
 
-parseDefBaseOrExt :: Maybe String -> [Sexpr String] -> Either String (Either LangDef LangMod)
+parseDefBaseOrExt :: Maybe String -> [Sexpr String] -> Either String (Either Language LangMod)
 parseDefBaseOrExt originalText (langName:Atom ":->":rest) = case rest of
   (extName:rest') -> case rest' of
     (candidateParams:rest'') | Right params <- parseParams candidateParams
@@ -189,14 +192,15 @@ parseParams other = Left $ concat
   , "  " ++ show other
   ]
 
-parseLangDef :: Maybe String -> Sexpr String -> [LowName] -> [Sexpr String] -> Either String LangDef
-parseLangDef originalProgram nameExpr langParamReqs syncatExprs = do
-  langNameReq <- parseLangName nameExpr
-  syncatReqs <- parseSyncat `mapM` syncatExprs
-  pure $ LangDef
-    { langNameReq
-    , langParamReqs
-    , syncatReqs
+parseLangDef :: Maybe String -> Sexpr String -> [LowName] -> [Sexpr String] -> Either String Language
+parseLangDef originalProgram nameExpr langParams syncatExprs = do
+  lName <- parseLangName nameExpr
+  syncats <- parseSyncat `mapM` syncatExprs
+  pure $ Language
+    { langName = unDotted lName
+    , langNameTH = TH.mkName $ fromUpName lName
+    , langParams
+    , syncats = Map.fromList $ syncats <&> \s -> (s.syncatName, s)
     , originalProgram
     , baseDefdLang = Nothing
     }
@@ -205,7 +209,7 @@ parseLangName :: Sexpr String -> Either String UpName
 parseLangName (Atom str) | Just str' <- toUpName str = pure str'
 parseLangName _ = Left "language name must be an UpCase alphanumeric symbol"
 
-parseSyncat :: Sexpr String -> Either String SyncatDef
+parseSyncat :: Sexpr String -> Either String Syncat
 parseSyncat (Combo "(" (nameExpr:prodExprs)) = do
   sName <- case nameExpr of
     (Atom nameStr) | Just sName <- toUpName nameStr -> pure sName
@@ -214,7 +218,7 @@ parseSyncat (Combo "(" (nameExpr:prodExprs)) = do
       , "  " ++ Stupid.print id nameExpr
       ]
   prods <- parseProd `mapM` prodExprs
-  pure $ SyncatDef sName prods
+  pure $ Syncat sName (TH.mkName $ fromUpName sName) (Map.fromList $ prods <&> \p -> (p.prodName, p))
 parseSyncat other = Left $ concat
   [ "expecting syntactic category definition:\n"
   , "  (<SyncatName> <production>… )\n"
@@ -222,11 +226,15 @@ parseSyncat other = Left $ concat
   , "  " ++ Stupid.print id other
   ]
 
-parseProd :: Sexpr String -> Either String ProdDef
+parseProd :: Sexpr String -> Either String Production
 parseProd (Combo "(" (Atom prodStr:subtermExprs))
   | Just prodName <- toUpName prodStr = do
     subterms <- parseSubterm `mapM` subtermExprs
-    pure $ ProdDef prodName subterms
+    pure $ Production
+      { prodName
+      , prodNameTH = TH.mkName $ fromUpName prodName
+      , subterms
+      }
 parseProd other = Left $ concat
   [ "expecting a production definition:\n"
   , "  (<ProductionName> <subterm>… )\n"
@@ -297,14 +305,14 @@ parseType other = Left $ concat
 ---------------------------------
 
 parseLangMod :: Maybe String -> Sexpr String -> Sexpr String -> [LowName] -> [Sexpr String] -> Either String LangMod
-parseLangMod originalModProgram baseExpr newExpr newParamReqs modExprs = do
-  baseLangReq <- parseBaseLangName baseExpr
-  newLangReq <- parseLangName newExpr
+parseLangMod originalModProgram baseExpr newExpr newParams modExprs = do
+  baseLang <- parseBaseLangName baseExpr
+  newLang <- parseLangName newExpr
   modss <- parseSyncatMod `mapM` modExprs
   pure $ LangMod
-    { baseLangReq
-    , newLangReq
-    , newParamReqs
+    { baseLang
+    , newLang
+    , newParams
     , syncatMods = concat modss
     , originalModProgram
     }
@@ -353,7 +361,11 @@ parseProdMod :: Sexpr String -> Either String ProdMod
 parseProdMod (Combo "(" (Atom "+":Atom prodStr:subtermExprs))
   | Just prodName <- toUpName prodStr = do
     subterms <- parseSubterm `mapM` subtermExprs
-    pure $ AddProd $ ProdDef prodName subterms
+    pure $ AddProd $ Production
+      { prodName
+      , prodNameTH = TH.mkName $ fromUpName prodName
+      , subterms
+      }
 parseProdMod (Combo "(" [Atom "-", Atom prodStr])
   | Just prodName <- toUpName prodStr = pure $ DelProd prodName
 parseProdMod other = Left $ concat
