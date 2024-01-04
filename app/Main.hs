@@ -10,14 +10,16 @@ import Text.Pretty.Simple (pPrint)
 
 import qualified Lang as L0
 
-[deflang|(L1 from L0:L0
+[deflang|
+(L1 from L0:L0
   (* Expr
     (- Lam)
-    (+ Lam (String) Expr)
+    (+ Lam String ($ Expr))
     (- Nope)
   )
   (- Stmt)
-)|]
+)
+|]
 deriving stock instance Show Expr
 
 $(pure [])

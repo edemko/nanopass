@@ -2,6 +2,14 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 
+-- | This module contains functions that translate Haskell quasiquotes into
+-- internal representations of languages and passes as defined in "Nanopass.Internal.Representation".
+-- This is done by first parsing an s-expression with "Text.SExpression",
+-- and then recursively recognizing the components of that s-expression.
+--
+-- The primary entry points are 'parseLanguage' and TODO 'parsePass`.
+-- Other recognizers are exported to serve as the promary source for
+-- documentation about the grammar used in these quasiquotes.
 module Nanopass.Internal.Parser
   (
   -- * Recognizers
@@ -18,11 +26,13 @@ module Nanopass.Internal.Parser
   , parseLangLHS
   , parseSyncatBody
   , parseProductionBody
-  , parseTypeDesc
+  , parseType
   -- * S-Expressions
   , getSexpr
   , Loc(..)
   , toUpColonName
+  -- * Error Reporting
+  , Error(..)
   ) where
 
 import Nanopass.Internal.Representation
@@ -30,19 +40,25 @@ import Nanopass.Internal.Representation
 import Control.Monad (forM)
 import Data.Functor ((<&>))
 import Text.Megaparsec (runParser',State(..),PosState(..),SourcePos(..),errorBundlePretty)
+import Text.Megaparsec.Char (space1)
 import Text.Megaparsec.Pos (defaultTabWidth,mkPos)
-import Text.SExpression (SExpr(..),parseSExpr,def)
+import Text.SExpression (SExpr(..),Parser,parseSExpr,def)
 
 import qualified Data.Map as Map
 import qualified Language.Haskell.TH as TH
+import qualified Text.Megaparsec as P
+import qualified Text.Megaparsec.Char.Lexer as P
 
 ------------------------------
 ------ Glue it together ------
 ------------------------------
 
 -- | @
--- Language ::= <BaseLang> | <LangMod>
+-- Language ::= \<BaseLang\> | \<LangMod\>
 -- @
+--
+-- * for @BaseLang@, see 'parseBaseLanguage'
+-- * for @LangMod@, see 'parseLangMod'
 parseLanguage :: (Loc, String) -> Either Error (Either Language LangMod)
 parseLanguage inp@(_, orig) = do
   sexpr <- getSexpr inp
@@ -56,10 +72,13 @@ parseLanguage inp@(_, orig) = do
 
 -- | @
 -- BaseLang ::=
---   (<LangLHS>
---     <string…>
---     <Syncat…>)
+--   (\<LangLHS\>        language name and type variables
+--       \<string…\>     documentation
+--       \<Syncat…\>)    syntactic categories
 -- @
+--
+-- * for @LangLHS@, see 'parseLangLHS'
+-- * for @Syncat@, see 'parseSyncat'
 parseBaseLanguage :: String -> SExpr -> Either Error Language
 parseBaseLanguage originalProgram (List (lhs:rest)) = do
   (langName, langParams) <- parseLangLHS lhs
@@ -77,9 +96,12 @@ parseBaseLanguage originalProgram (List (lhs:rest)) = do
 parseBaseLanguage _ other = Left $ ExpectingLanguage other
 
 -- | @
--- LangLHS ::= <UpCase name>
---          |  (<UpCase name> <LowCase type var…>)
+-- LangLHS ::= \<UpCase\>                 language name, zero type variables
+--          |  (\<UpCase\> \<LowCase…\>)    language name, type variables
 -- @
+--
+-- * for @UpCase@, see 'toUpName'
+-- * for @LowCase@, see 'toLowName'
 parseLangLHS :: SExpr -> Either Error (UpName, [LowName])
 parseLangLHS (Atom str) = case toUpName str of
   Just name -> pure (name, [])
@@ -96,10 +118,13 @@ parseLangLHS it = Left $ ExpectedLangLHS it
 
 -- | @
 -- Syncat ::=
---   (<UpCase name>      type name
---     <string…>         documentation
---     <Production…>)    constructor arguments
+--   (\<UpCase\>             type name
+--       \<string…\>         documentation
+--       \<Production…\>)    constructor arguments
 -- @
+--
+-- * for @UpCase@, see 'toUpName'
+-- * for @Production@, see 'parseProduction'
 parseSyncat :: SExpr -> Either Error Syncat
 parseSyncat (List (Atom str:rest)) = do
   syncatName <- case toUpName str of
@@ -123,10 +148,13 @@ parseSyncatBody syncatName rest = do
 
 -- | @
 -- Production ::=
---   (<UpCase name>      constructor name
---     <string…>         documentation
---     <Type…>)          constructor arguments
+--   (\<UpCase\>        constructor name
+--       \<string…\>    documentation
+--       \<Type…\>)     constructor arguments
 -- @
+--
+-- * for @UpCase@, see 'toUpName'
+-- * for @Type@, see 'parseType'
 parseProduction :: SExpr -> Either Error Production
 parseProduction (List (Atom ctorStr:rest)) = do
   prodName <- case toUpName ctorStr of
@@ -139,7 +167,7 @@ parseProduction other = Left $ ExpectedProduction other
 parseProductionBody :: UpName -> [SExpr] -> Either Error Production
 parseProductionBody prodName rest = do
   let (docs, args) = spanDocstrs rest
-  subterms <- parseTypeDesc `mapM` args
+  subterms <- parseType `mapM` args
   pure Production
     { prodName
     , prodNameTH = TH.mkName $ fromUpName prodName
@@ -147,39 +175,54 @@ parseProductionBody prodName rest = do
     }
 
 -- | @
--- Type ::= <UpCase name>                non-terminal
---       |  <lowCase name>               type parameter
---       |  (<UpDotName> <Type…>)        Haskell type
---       |  (? <type>)                   Maybe type
---       |  (* <type>)                   List type
---       |  (+ <type>)                   NonEmpty type
---       |  () | (&)                     unit type
---       |  (& <Type>)                   Only types TODO
---       |  (& <Type> <Type> <Type…>)    tuple types
+-- Type ::= (\'$\' \<UpCase name\>)            non-terminal (language parameters already applied)
+--       |  \<lowCase name\>                 type parameter
+--       |  \<UpColonName\>                  plain Haskell type (kind *)
+--       |  (\<UpColonName\> \<Type…\>)        plain Haskell type application
+--       |  (\'?\' \<Type\>)                   Maybe type
+--       |  (\'*\' \<Type\>)                   List type
+--       |  (\'+\' \<Type\>)                   NonEmpty type
+--       |  () | (\'&\')                     unit type
+--       |  (\'&\' \<Type\>)                   Only type TODO
+--       |  (\'&\' \<Type\> \<Type\> \<Type…\>)    tuple types
 -- @
-parseTypeDesc :: SExpr -> Either Error TypeDesc
-parseTypeDesc = \case
+--
+--
+-- * for @UpCase@, see 'toUpName'
+-- * for @LowCase@, see 'toLowName'
+-- * for @UpColonCase@, see 'toUpColonName'
+parseType :: SExpr -> Either Error TypeDesc
+parseType = \case
   Atom str
-    | Just name <- toUpName str -> pure $ RecursiveType name
-    | Just name <- toLowName str -> pure $ VarType (TH.mkName $ fromLowName name)
+    | Just name <- toUpColonName str
+      -> pure $ CtorType (TH.mkName $ fromUpDotName name) []
+    | Just name <- toLowName str
+      -> pure $ VarType (TH.mkName $ fromLowName name)
     | otherwise -> Left $ ExpectingTypeNameOrVar str
   List [] -> pure UnitType
-  List [Atom "?", x] -> MaybeType <$> parseTypeDesc x
-  List [Atom "*", x] -> ListType <$> parseTypeDesc x
-  List [Atom "+", x] -> NonEmptyType <$> parseTypeDesc x
+  List (Atom "$" : rest) -> case rest of
+    [Atom str]
+      | Just name <- toUpName str -> pure $ RecursiveType name
+      | otherwise -> Left $ ExpectedSyncatName (Just $ Atom str)
+    [x] -> Left $ ExpectedSyncatName (Just x)
+    (_:x:_) -> Left $ UnexpectedSExprAfterNonterminal x
+    [] -> Left $ ExpectedSyncatName Nothing
+  List [Atom "?", x] -> MaybeType <$> parseType x
+  List [Atom "*", x] -> ListType <$> parseType x
+  List [Atom "+", x] -> NonEmptyType <$> parseType x
   List (Atom "&" : xs_) -> case xs_ of
     [] -> pure UnitType
-    [x] -> parseTypeDesc x -- TODO Data.Tuple.Only
+    [x] -> parseType x -- TODO Data.Tuple.Only
     (x1:x2:xs) -> do
-      t1 <- parseTypeDesc x1
-      t2 <- parseTypeDesc x2
-      ts <- parseTypeDesc `mapM` xs
+      t1 <- parseType x1
+      t2 <- parseType x2
+      ts <- parseType `mapM` xs
       pure $ TupleType t1 t2 ts
   List (x:xs) -> do
     ctor <- case x of
       Atom str | Just name <- toUpColonName str -> pure name
       _ -> Left $ ExpectedTypeConstructor x
-    ts <- parseTypeDesc `mapM` xs
+    ts <- parseType `mapM` xs
     pure $ CtorType (TH.mkName $ fromUpDotName ctor) ts
   x@(ConsList _ _) -> Left $ ConsListsDisallowed x
   x@(Number _) -> Left $ UnexpectedLiteral x
@@ -198,10 +241,16 @@ spanDocstrs = loop []
 
 -- | @
 -- LangMod ::=
---   (<LangLHS> 'from' <UpDot base language name>
---     <string…>
---     <LangEdit…>)
+--   (\<LangLHS\>             new language name and type variables
+--         \'from\'           keyword
+--         \<UpColon\>        base language name
+--       \<string…\>          documentation
+--       \<SyncatsEdit…\>)    changes to the base language's syntactic categories
 -- @
+--
+-- * for @LangLHS@, see 'parseLangLHS'
+-- * for @UpColon@, see 'toUpColonName'
+-- * for @SyncatsEdit@, see 'parseSyncatsEdit'
 parseLangMod :: String -> SExpr -> Either Error LangMod
 parseLangMod originalModProgram (List (lhs:Atom "from":rest_)) = do
   (newLang, newParams) <- parseLangLHS lhs
@@ -222,10 +271,19 @@ parseLangMod _ other = Left $ ExpectingKwFromAfterLHS other
 
 -- | @
 -- SyncatsEdit
---   ::= ('+' <UpCase name> <string…> <Production…>)    add a syntactic category
---    |  ('-' <UpCase name>)                            remove a syntactic category
---    |  ('*' <UpCase name> <ProductionsEdit…>)         modify a syntactic category's productions
+--   ::= (\'+\'                       add a syntactic category
+--           \<UpCase\>                 new non-terminal name
+--           \<string…\>                documentation
+--           \<Production…\>)           constructors
+--    |  (\'-\' \<UpCase\>)             remove a syntactic category by name
+--    |  (\'*\'                       modify a syntactic category's productions
+--           \<UpCase name\>            name of non-terminal to edit
+--           \<ProductionsEdit…\>)      changes to the base language's non-terminal
 -- @
+--
+-- * for @UpCase@, see 'toUpName'
+-- * for @Production@, see 'parseProduction'
+-- * for @ProductionsEdit@, see 'parseProductionsEdit'
 parseSyncatsEdit :: SExpr -> Either Error SyncatsEdit
 parseSyncatsEdit (List (Atom "+":rest_)) = do
   (syncatName, rest) <- case rest_ of
@@ -255,9 +313,15 @@ parseSyncatsEdit other = Left $ ExpectingSyncatsEdit other
 
 -- | @
 -- ProductionsEdit
---   ::= ('+' <UpCase name> <string…> <Type…>)    add a production
---    |  ('-' <UpCase name>)                      remove a production
+--   ::= (\'+\'              add a production
+--           \<UpCase\>        new constructor name
+--           \<string…\>       documentation
+--           \<Type…\>)        constructor arguments
+--    |  (\'-\' \<UpCase\>)    remove a production by name
 -- @
+--
+-- * for @UpCase@, see 'toUpName'
+-- * for @Type@, see 'parseType'
 parseProductionsEdit :: SExpr -> Either Error ProductionsEdit
 parseProductionsEdit (List (Atom "+":rest_)) = do
   (prodName, rest) <- case rest_ of
@@ -286,16 +350,18 @@ parseProductionsEdit other = Left $ ExpectingProductionsEdit other
 -- It is used in 'getSexpr' so that it can report errors from the actual source code location.
 data Loc = Loc
   { file :: FilePath
-  , line :: Int -- ^ TODO hopefully 1-indexed
-  , col :: Int -- ^ TODO hopefully 1-indexed
+  , line :: Int
+  , col :: Int
   }
 
 -- | This serves as an adapter between Template Haskell and whatever s-expression parser I decide to use.
 getSexpr :: (Loc, String) -> Either Error SExpr
-getSexpr (loc, inp) = case runParser' (parseSExpr def) state0 of
+getSexpr (loc, inp) = case runParser' (sc *> parseSExpr def <* sc) state0 of
     (_, Left err) -> Left . SexprError $ errorBundlePretty err
     (_, Right sexpr) -> Right sexpr
   where
+  sc :: Parser ()
+  sc = P.space space1 (P.skipLineComment ";") P.empty
   state0 = State
     { stateInput = inp
     , stateOffset = 0
@@ -315,6 +381,9 @@ getSexpr (loc, inp) = case runParser' (parseSExpr def) state0 of
 
 -- | Since sexprs don't allow dot in names, we use colon instead.
 -- We just immediately translate it over into dots.
+--
+-- That is, accept strings matching @[A-Z][a-zA-Z0-9_]\(:[A-Z][a-zA-Z0-9_])*@,
+-- and alter them with @s\/\\.\/:\/@.
 toUpColonName :: String -> Maybe UpDotName
 toUpColonName = toUpDotName . map (\c -> if c == ':' then '.' else c)
 
@@ -344,10 +413,8 @@ data Error
   -- parseProduction
   | ExpectedConstructorName (Maybe SExpr)
   | ExpectedProduction SExpr
-  -- parseTypeDesc
-  | UnrecognizedSyncat UpName
-  | UnrecognizedTyVar LowName
-  | ExpectedRecursiveType String
+  -- parseType
+  | UnexpectedSExprAfterNonterminal SExpr
   | ExpectingTypeNameOrVar String
   | ExpectedTypeConstructor SExpr
   | UnexpectedLiteral SExpr

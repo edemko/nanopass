@@ -55,6 +55,7 @@ toLowName _ = Nothing
 fromLowName :: LowName -> String
 fromLowName (LowName str) = str
 
+-- | Strings matching @[A-Z][a-zA-Z0-9_]\(:[A-Z][a-zA-Z0-9_])*@
 data UpDotName = UpDotName [UpName] UpName
   deriving (Show,Eq,Ord)
 

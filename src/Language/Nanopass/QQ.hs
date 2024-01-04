@@ -29,10 +29,8 @@ import qualified Text.Pretty.Simple as PP
 -- | Define a language, either from scratch or by derivation from an existing language.
 -- The syntax is based on s-expressions.
 --
--- WARNING for now, I don't allow leading/trailing whitespace, but that TODO will be fixed
---
--- TODO document the syntax, or you can look in "Nanopass.Internal.Parser"
--- More details and examples are given in the [TODO out-of-date readme](https://github.com/edemko/nanopass/blob/master/README.md).
+-- TODO document the syntax, or for now you can look in "Nanopass.Internal.Parser"
+-- More details and examples are given in the [readme](https://github.com/edemko/nanopass/blob/master/README.md).
 deflang :: QuasiQuoter
 deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
   where
