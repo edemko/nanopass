@@ -177,10 +177,11 @@ parseTypeDesc = \case
       pure $ TupleType t1 t2 ts
   List (x:xs) -> do
     ctor <- case x of
-      Atom str | Just name <- toUpDotName str -> pure name
+      Atom str | Just name <- toUpColonName str -> pure name
       _ -> Left $ ExpectedTypeConstructor x
     ts <- parseTypeDesc `mapM` xs
     pure $ CtorType (TH.mkName $ fromUpDotName ctor) ts
+  x@(ConsList _ _) -> Left $ ConsListsDisallowed x
   x@(Number _) -> Left $ UnexpectedLiteral x
   x@(String _) -> Left $ UnexpectedLiteral x
   x@(Bool _) -> Left $ UnexpectedLiteral x
@@ -350,4 +351,5 @@ data Error
   | ExpectingTypeNameOrVar String
   | ExpectedTypeConstructor SExpr
   | UnexpectedLiteral SExpr
+  | ConsListsDisallowed SExpr
   deriving (Show)
