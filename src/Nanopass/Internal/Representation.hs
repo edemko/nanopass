@@ -12,8 +12,8 @@ module Nanopass.Internal.Representation
   , TypeDesc(..)
   -- * Types for Modifying Manguages
   , LangMod(..)
-  , SyncatMod(..)
-  , ProdMod(..)
+  , SyncatsEdit(..)
+  , ProductionsEdit(..)
   -- * Helper Types
   , UpName, toUpName, fromUpName
   , LowName, toLowName, fromLowName
@@ -56,7 +56,7 @@ fromLowName :: LowName -> String
 fromLowName (LowName str) = str
 
 data UpDotName = UpDotName [UpName] UpName
-  deriving (Show)
+  deriving (Show,Eq,Ord)
 
 -- | Introduction form for 'UpDotName'
 toUpDotName :: String -> Maybe UpDotName
@@ -143,13 +143,13 @@ data Production = Production
 
 data TypeDesc
   = RecursiveType UpName -- these are metavariables that start with a lowercase letter
-  | VarType TH.Name -- TODO should this really be a `TH.Name`?
-  | CtorType TH.Name [TypeDesc] -- the string here will be used to look up a type in scope at the splice site, and will start with an uppercase letter
+  | VarType TH.Name
+  | CtorType TH.Name [TypeDesc]
   | ListType TypeDesc -- because otherwise, you'd have to always be saying `type List a = [a]`
   | MaybeType TypeDesc
   | NonEmptyType TypeDesc
+  | UnitType
   | TupleType TypeDesc TypeDesc [TypeDesc]
-  | MapType TypeDesc TypeDesc
   deriving(Eq,Show)
 
 ---------------------------------
@@ -160,18 +160,18 @@ data LangMod = LangMod
   { baseLang :: UpDotName
   , newLang :: UpName
   , newParams :: [LowName]
-  , syncatMods :: [SyncatMod]
+  , syncatsEdit :: [SyncatsEdit]
   , originalModProgram :: Maybe String
   }
   deriving(Show)
 
-data SyncatMod
+data SyncatsEdit
   = AddSyncat Syncat
-  | ModProds UpName [ProdMod]
+  | ModSyncat UpName [ProductionsEdit]
   | DelSyncat UpName
   deriving(Show)
 
-data ProdMod
+data ProductionsEdit
   = AddProd Production
   | DelProd UpName
   deriving(Show)

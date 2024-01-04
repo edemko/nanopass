@@ -9,9 +9,6 @@ module Language.Nanopass.LangDef
   , runDefine
   , defineLang
   , reifyLang
-  , LangMod(..)
-  , SyncatMod(..)
-  , ProdMod(..)
   , runModify
   , modifyLang
   ) where
@@ -165,16 +162,12 @@ subtermType (MaybeType argDesc) = do
   maybeType <- M.lift [t|Maybe|]
   arg <- subtermType argDesc
   pure $ TH.AppT maybeType arg
+subtermType UnitType = pure $ TH.TupleT 0
 subtermType (TupleType t1 t2 ts) = do
   let tupLen = 2 + length ts
       thTup = TH.TupleT tupLen
   tys <- subtermType `mapM` (t1:t2:ts)
   pure $ foldl TH.AppT thTup tys
-subtermType (MapType kDesc vDesc) = do
-  m <- M.lift [t|Map|]
-  k <- subtermType kDesc
-  v <- subtermType vDesc
-  pure $ TH.AppT (TH.AppT m k) v
 
 ----------------------------------
 ------ Language Reification ------
@@ -259,8 +252,6 @@ reifyLang langName = do
       t2Desc <- recurse t2
       tDescs <- recurse `mapM` ts
       pure $ TupleType t1Desc t2Desc tDescs
-    recurse (TH.AppT (TH.AppT (TH.ConT special) k) v)
-      | special == ''Map = MapType <$> recurse k <*> recurse v
     recurse (TH.AppT (TH.ConT special) a)
       | special == ''Maybe = MaybeType <$> recurse a
       | special == ''NonEmpty = NonEmptyType <$> recurse a
@@ -339,15 +330,15 @@ runModify lMod = do
 
 modifyLang :: Language -> LangMod -> Q [Dec]
 modifyLang defd mods = do
-  defd' <- restrictLang defd (syncatMods mods)
+  defd' <- restrictLang defd mods.syncatsEdit
   -- TODO I think it's at this point that I can generate the default translation
   lang' <- extendLang defd' mods
   runDefine $ defineLang lang'
 
-restrictLang :: Language -> [SyncatMod] -> Q Language
+restrictLang :: Language -> [SyncatsEdit] -> Q Language
 restrictLang = foldM doSyncat
   where
-  doSyncat :: Language -> SyncatMod -> Q Language
+  doSyncat :: Language -> SyncatsEdit -> Q Language
   doSyncat l (AddSyncat _) = pure l
   doSyncat l (DelSyncat sName) = case Map.lookup sName l.syncats of
     Just _ -> pure $ l{ syncats = Map.delete sName l.syncats }
@@ -356,7 +347,7 @@ restrictLang = foldM doSyncat
       , "attempt to delete non-existent syntactic category "
       , fromUpName sName ++ " from " ++ show l.langNameTH
       ]
-  doSyncat l (ModProds sName prodMods) = case Map.lookup sName l.syncats of
+  doSyncat l (ModSyncat sName prodMods) = case Map.lookup sName l.syncats of
     Just syncat -> do
       syncat' <- foldM doProds syncat prodMods
       pure l{ syncats = Map.insert sName syncat' l.syncats }
@@ -366,7 +357,7 @@ restrictLang = foldM doSyncat
       , fromUpName sName ++ " from " ++ show l.langNameTH
       ]
     where
-    doProds :: Syncat -> ProdMod -> Q Syncat
+    doProds :: Syncat -> ProductionsEdit -> Q Syncat
     doProds s (AddProd _) = pure s
     doProds s (DelProd pName) = case Map.lookup pName s.productions of
       Just _ -> pure $ s{ productions = Map.delete pName s.productions }
@@ -378,8 +369,8 @@ restrictLang = foldM doSyncat
 
 extendLang :: Language -> LangMod -> Q Language
 extendLang l lMods = do
-  syncats0 <- doSyncat lMods.syncatMods `mapM` Map.elems l.syncats
-  let syncats = syncats0 ++ catAddSyncat lMods.syncatMods
+  syncats0 <- doSyncat lMods.syncatsEdit `mapM` Map.elems l.syncats
+  let syncats = syncats0 ++ catAddSyncat lMods.syncatsEdit
   pure $ Language
     { langName = unDotted lMods.newLang
     , langNameTH = TH.mkName $ fromUpName lMods.newLang
@@ -390,7 +381,7 @@ extendLang l lMods = do
     }
   where
   -- | takes a syntactic category from the base language to the new language
-  doSyncat :: [SyncatMod] -> Syncat -> Q Syncat
+  doSyncat :: [SyncatsEdit] -> Syncat -> Q Syncat
   doSyncat gMods syncat0 = do
     let prodList
           =  doProd <$> Map.elems syncat0.productions
@@ -403,12 +394,12 @@ extendLang l lMods = do
   -- | takes a production from the base language to the new language
   doProd :: Production -> Production
   doProd prod@Production{} = prod{ prodNameTH = TH.mkName $ fromUpName prod.prodName }
-  catAddSyncat :: [SyncatMod] -> [Syncat]
+  catAddSyncat :: [SyncatsEdit] -> [Syncat]
   catAddSyncat (AddSyncat s : moreSMods) = s : catAddSyncat moreSMods
   catAddSyncat (_ : moreSMods) = catAddSyncat moreSMods
   catAddSyncat [] = []
-  catAddProd :: UpName -> [SyncatMod] -> [Production]
-  catAddProd sName (ModProds toName prodMods : moreSMods)
+  catAddProd :: UpName -> [SyncatsEdit] -> [Production]
+  catAddProd sName (ModSyncat toName prodMods : moreSMods)
     | toName == sName = go prodMods ++ catAddProd sName moreSMods
     where
     go (AddProd p : morePMods) = p : go morePMods

@@ -24,7 +24,6 @@ import Data.Functor ((<&>))
 import Data.Functor.Identity (Identity(..))
 import Data.List (nub)
 import Data.List.NonEmpty (NonEmpty)
-import Data.Map (Map)
 import Language.Haskell.TH (Exp(AppE,VarE))
 import Language.Haskell.TH (Q,Dec)
 import Language.Haskell.TH (Type(AppT))
@@ -156,6 +155,9 @@ createAuto (CtorType tyName ts)
 createAuto (ListType t) = traversableAuto t
 createAuto (MaybeType t) = traversableAuto t
 createAuto (NonEmptyType t) = traversableAuto t
+createAuto UnitType = do
+  let auto _ _ = VarE 'pure `AppE` TH.TupE []
+  pure auto
 createAuto (TupleType t1 t2 ts) = do
   tupleMaker <- do
     tVars <- forM [1..length (t1:t2:ts)] $ \i -> M.lift $ TH.newName ("t" ++ show i)
@@ -170,9 +172,6 @@ createAuto (TupleType t1 t2 ts) = do
               foldl idiomAppE (AppE (VarE 'pure) tupleMaker) (zipWith elemAuto autos' args')
          in lam `AppE` VarE argVar
   pure auto
-createAuto (MapType k v)
-  | not (containsGrammar k) = traversableAuto v
-  | otherwise = hoistNothing
 
 traversableAuto :: TypeDesc -> MaybeT Q (TH.Name -> TH.Name -> Exp)
 traversableAuto t = do
@@ -329,17 +328,12 @@ interpretTypeDesc l = go
   go (ListType argDesc) = AppT TH.ListT (go argDesc)
   go (NonEmptyType argDesc) = AppT (TH.ConT ''NonEmpty) (go argDesc)
   go (MaybeType argDesc) = AppT (TH.ConT ''Maybe) (go argDesc)
+  go UnitType = TH.TupleT 0
   go (TupleType t1 t2 ts) =
     let tupLen = 2 + length ts
         thTup = TH.TupleT tupLen
         tys = go <$> (t1:t2:ts)
      in foldl AppT thTup tys
-  go (MapType kDesc vDesc) = do
-    let m = TH.ConT ''Map
-        k = go kDesc
-        v = go vDesc
-     in AppT (AppT m k) v
-
 
 ---------------------------------------
 ------ Declare Descend Functions ------
@@ -459,8 +453,8 @@ containsGrammar (CtorType _ ts) = any containsGrammar ts
 containsGrammar (ListType t) = containsGrammar t
 containsGrammar (MaybeType t) = containsGrammar t
 containsGrammar (NonEmptyType t) = containsGrammar t
+containsGrammar UnitType = False
 containsGrammar (TupleType t1 t2 ts) = any containsGrammar (t1:t2:ts)
-containsGrammar (MapType t1 t2) = containsGrammar t1 || containsGrammar t2
 
 findAuto :: UpName -> UpName -> [XlateProd] -> Maybe XlateProd
 findAuto sName pName autosHoles = case filter f autosHoles of

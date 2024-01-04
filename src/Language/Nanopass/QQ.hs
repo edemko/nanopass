@@ -21,10 +21,12 @@ import Language.Haskell.TH.Quote (QuasiQuoter(..))
 import Language.Nanopass.Xlate (mkXlate)
 import Text.Parse.Stupid (Sexpr(..))
 
-
 import qualified Data.Map as Map
+import qualified Data.Text.Lazy as LT
 import qualified Language.Haskell.TH as TH
+import qualified Nanopass.Internal.Parser as Parser
 import qualified Text.Parse.Stupid as Stupid
+import qualified Text.Pretty.Simple as PP
 
 -- | Define a language, either from scratch or by derivation from an existing language.
 -- The syntax is based on s-expressions. Whitespace doesn't matter, and a (full) line can be commented out with a hash (@#@).
@@ -91,14 +93,16 @@ deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
   where
   go :: String -> Q [Dec]
   go input = do
-    sexprs <- case Stupid.parse input of
-      Just it -> pure it
-      Nothing -> fail "sexpr syntax error"
-    case parseDefBaseOrExt (Just input) sexprs of
-      Right (Left def) -> runDefine $ defineLang def
-      Right (Right mod) -> runModify mod
-      Left err -> fail err
-  bad ctx _ = fail $ "`deflang` quasiquoter cannot be used in a " ++ ctx ++ " context,\n\
+    loc <- TH.location <&> \l -> Parser.Loc
+        { Parser.file = l.loc_filename
+        , Parser.line = fst l.loc_start
+        , Parser.col = snd l.loc_start
+        }
+    case Parser.parseLanguage (loc, input) of
+      (Right (Left def)) -> runDefine $ defineLang def
+      (Right (Right mod)) -> runModify mod
+      Left err -> fail $ (LT.unpack . PP.pShow) err -- TODO
+  bad ctx _ = fail $ "`deflang` quasiquoter cannot be used in " ++ ctx ++ " context,\n\
                      \it can only appear as part of declarations."
 
 -- | Define automatic translation between two langauges.
@@ -275,12 +279,8 @@ parseType (Combo "[" subexprs)
     lhs <- parseType lhsExpr
     rhs <- parseType rhsExpr
     pure $ ListType (TupleType lhs rhs [])
-parseType (Combo "{" subexprs)
-  | Just (lhsExpr, rhsExpr) <- fromMapType subexprs = do
-    lhs <- parseType lhsExpr
-    rhs <- parseType rhsExpr
-    pure $ MapType lhs rhs
-  | otherwise = parseType `mapM` subexprs >>= \case
+parseType (Combo "{" subexprs) =
+  parseType `mapM` subexprs >>= \case
     (t1:t2:ts) -> pure $ TupleType t1 t2 ts
     _ -> Left $ concat
       [ "expecting two or more types as part of a tuple, got:\n"
@@ -308,12 +308,12 @@ parseLangMod :: Maybe String -> Sexpr String -> Sexpr String -> [LowName] -> [Se
 parseLangMod originalModProgram baseExpr newExpr newParams modExprs = do
   baseLang <- parseBaseLangName baseExpr
   newLang <- parseLangName newExpr
-  modss <- parseSyncatMod `mapM` modExprs
+  modss <- parseSyncatsEdit `mapM` modExprs
   pure $ LangMod
     { baseLang
     , newLang
     , newParams
-    , syncatMods = concat modss
+    , syncatsEdit = concat modss
     , originalModProgram
     }
 
@@ -321,34 +321,34 @@ parseBaseLangName :: Sexpr String -> Either String UpDotName
 parseBaseLangName (Atom str) | Just str' <- toUpDotName str = pure str'
 parseBaseLangName _ = Left "base language name must be a non-empty list of dot-separated UpCase alphanumeric symbol"
 
-parseSyncatMod :: Sexpr String -> Either String [SyncatMod]
-parseSyncatMod (Combo "(" (Atom "+":syncatExprs)) = do
+parseSyncatsEdit :: Sexpr String -> Either String [SyncatsEdit]
+parseSyncatsEdit (Combo "(" (Atom "+":syncatExprs)) = do
   (fmap AddSyncat . parseSyncat) `mapM` syncatExprs
-parseSyncatMod (Combo "(" (Atom "-":syncatExprs)) =
+parseSyncatsEdit (Combo "(" (Atom "-":syncatExprs)) =
   forM syncatExprs $ \case
     (Atom syncatStr) | Just sName <- toUpName syncatStr -> pure $ DelSyncat sName
     other -> Left $ "expecting the name of a syntactic category, got:\n  " ++ Stupid.print id other
-parseSyncatMod (Combo "(" (Atom "*":Atom sStr:pModExprs))
+parseSyncatsEdit (Combo "(" (Atom "*":Atom sStr:pModExprs))
   | Just sName <- toUpName sStr = do
     pMods <- parseProdMod `mapM` pModExprs
-    pure [ModProds sName pMods]
+    pure [ModSyncat sName pMods]
   | otherwise = Left $ concat
       [ "expecting syntactic category name"
       , ", got: ", show sStr
       ]
-parseSyncatMod (Combo "(" (Atom "*":syncatExprs)) =
+parseSyncatsEdit (Combo "(" (Atom "*":syncatExprs)) =
   forM syncatExprs $ \case
     (Combo "(" (Atom sStr:pModExprs))
       | Just sName <- toUpName sStr -> do
         pMods <- parseProdMod `mapM` pModExprs
-        pure $ ModProds sName pMods
+        pure $ ModSyncat sName pMods
     other -> Left $ concat
       [ "expecting syntactic category modifier:\n"
       , "  (<SyncatName> <ctor mods>… )\n"
       , "got:\n"
       , "  ", Stupid.print id other
       ]
-parseSyncatMod other = Left $ concat
+parseSyncatsEdit other = Left $ concat
   [ "expecting syntactic category modifier batch:\n"
   , "  (+ <syncat modifier>… )\n"
   , "  (* <syncat modifier>… )\n"
@@ -357,7 +357,7 @@ parseSyncatMod other = Left $ concat
   , "  " ++ Stupid.print id other
   ]
 
-parseProdMod :: Sexpr String -> Either String ProdMod
+parseProdMod :: Sexpr String -> Either String ProductionsEdit
 parseProdMod (Combo "(" (Atom "+":Atom prodStr:subtermExprs))
   | Just prodName <- toUpName prodStr = do
     subterms <- parseSubterm `mapM` subtermExprs
