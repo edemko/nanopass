@@ -29,7 +29,7 @@ import qualified Text.Pretty.Simple as PP
 -- | Define a language, either from scratch or by derivation from an existing language.
 -- The syntax is based on s-expressions.
 --
--- TODO document the syntax, or for now you can look in "Nanopass.Internal.Parser"
+-- TODO document the syntax here, or for now you can look in "Nanopass.Internal.Parser"
 -- More details and examples are given in the [readme](https://github.com/edemko/nanopass/blob/master/README.md).
 deflang :: QuasiQuoter
 deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go

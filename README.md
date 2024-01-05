@@ -234,14 +234,14 @@ Language ::= <BaseLang> | <LangMod>
 BaseLang ::=
  (<LangLHS>        language name and type variables
      <string…>     documentation
-     <Syncat…>)    syntactic categories
+     <Nonterm…>)   syntactic categories
 
 LangMod ::=
  (<LangLHS>             new language name and type variables
        'from'           keyword
        <UpColon>        base language name
      <string…>          documentation
-     <SyncatsEdit…>)    changes to the base language's syntactic categories
+     <NontermsEdit…>)   changes to the base language's syntactic categories
 
 LangLHS ::= <UpCase>                 language name, zero type variables
         |  (<UpCase> <LowCase…>)    language name, type variables
@@ -250,7 +250,7 @@ LangLHS ::= <UpCase>                 language name, zero type variables
 ------ Base Definitions ------
 ------------------------------
 
-Syncat ::=
+Nonterm ::=
  (<UpCase>             type name
      <string…>         documentation
      <Production…>)    constructor arguments
@@ -275,7 +275,7 @@ Type ::= ('$' <UpCase name>)            non-terminal (language parameters alread
 ------ Modifications ------
 ---------------------------
 
-SyncatsEdit
+NontermsEdit
  ::= ('+'                       add a syntactic category
          <UpCase>                 new non-terminal name
          <string…>                documentation
