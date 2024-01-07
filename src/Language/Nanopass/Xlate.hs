@@ -35,10 +35,10 @@ import qualified Language.Haskell.TH as TH
 import qualified Language.Haskell.TH.Syntax as TH
 
 
-mkXlate :: Language 'Valid -> Language 'Valid -> Q [Dec]
+mkXlate :: Language 'Valid UpDotName -> Language 'Valid UpDotName -> Q [Dec]
 mkXlate l1 l2 = xlateDef l1 l2 >>= declareXlate l1 l2
 
-declareXlate :: Language 'Valid -> Language 'Valid -> XlateDef -> Q [Dec]
+declareXlate :: Language 'Valid UpDotName -> Language 'Valid UpDotName -> XlateDef -> Q [Dec]
 declareXlate l1 l2 xlate = do
   xlateType <- declareType xlate
   xlateTypeI <- declareTypeI xlate
@@ -59,8 +59,8 @@ data XlateDef = XlateDef
   , xlateProds :: [XlateProd] -- FIXME these should go under xlateNonterms, probly
     -- ^ information about the productions in the source that are missing in the target
     -- this is so that we require the user to supply these in an Xlate type
-  , xlateFrom :: Language 'Valid
-  , xlateTo :: Language 'Valid
+  , xlateFrom :: Language 'Valid UpDotName
+  , xlateTo :: Language 'Valid UpDotName
   }
 type XlateProd = Either XlateHoleDef XlateAuto
 data XlateAuto = XlateAuto
@@ -80,14 +80,14 @@ data XlateNontermDef = XlateNontermDef
   , toType :: TH.Type -- parameterized type of the target language at this syntactic category
   }
 
-xlateDef :: Language 'Valid -> Language 'Valid -> Q XlateDef
+xlateDef :: Language 'Valid UpDotName -> Language 'Valid UpDotName -> Q XlateDef
 xlateDef l1 l2 = do
-  let xlateParams = (.th) <$> nub (l1.langParams ++ l2.langParams)
+  let xlateParams = (.th) <$> nub (l1.langInfo.langParams ++ l2.langInfo.langParams)
   xlateFParam <- if TH.mkName "f" `elem` xlateParams
     then TH.newName "f"
     else pure $ TH.mkName "f"
-  xlateProds <- fmap concat $ forM (Map.toAscList $ l1.nonterms) $ detectHoles l1 l2
-  let xlateNonterms = concatMap (detectOverrides l1 l2) $ Map.toAscList l1.nonterms
+  xlateProds <- fmap concat $ forM (Map.toAscList $ l1.langInfo.nonterms) $ detectHoles l1 l2
+  let xlateNonterms = concatMap (detectOverrides l1 l2) $ Map.toAscList l1.langInfo.nonterms
   pure $ XlateDef
     { xlateParams
     , xlateFParam
@@ -97,8 +97,11 @@ xlateDef l1 l2 = do
     , xlateTo = l2
     }
 
-detectHoles :: Language 'Valid -> Language 'Valid -> (UpName, Nonterm 'Valid) -> Q [Either XlateHoleDef XlateAuto]
-detectHoles l1 l2 (sName, s1) = case Map.lookup sName l2.nonterms of
+detectHoles :: Language 'Valid UpDotName
+            -> Language 'Valid UpDotName
+            -> (UpName, Nonterm 'Valid)
+            -> Q [Either XlateHoleDef XlateAuto]
+detectHoles l1 l2 (sName, s1) = case Map.lookup sName l2.langInfo.nonterms of
   Nothing -> pure [] -- no translation required: no l2 ctor can use the a type corresponding to this l1 type (because it doesn't exist)
   Just s2 -> fmap concat $ forM (Map.toAscList s1.productions) $ detectHoleCtors s2
   where
@@ -120,18 +123,18 @@ detectHoles l1 l2 (sName, s1) = case Map.lookup sName l2.nonterms of
   createHole pName prod1 =
     let holeArgs = flip map prod1.subterms $ \subterm ->
           interpretTypeDesc l1 subterm
-        holeCtor = TH.ConT (TH.mkName $ fromUpDotName (upDotChBase l2.langName.base sName))
-        holeResult = foldl AppT holeCtor (TH.VarT . (.th) <$> l2.langParams)
+        holeCtor = TH.ConT (TH.mkName $ fromUpDotName (upDotChBase l2.langName.name sName))
+        holeResult = foldl AppT holeCtor (TH.VarT . (.th) <$> l2.langInfo.langParams)
      in XlateHoleDef{nontermName=sName,prodName=pName,holeArgs,holeResult}
 
-detectOverrides :: Language 'Valid -> Language 'Valid -> (UpName, Nonterm 'Valid) -> [XlateNontermDef]
-detectOverrides l1 l2 (sName, _) = case Map.lookup sName l2.nonterms of
+detectOverrides :: Language 'Valid UpDotName -> Language 'Valid UpDotName -> (UpName, Nonterm 'Valid) -> [XlateNontermDef]
+detectOverrides l1 l2 (sName, _) = case Map.lookup sName l2.langInfo.nonterms of
   Nothing -> [] -- no translation required: no l2 ctor can use the a type corresponding to this l1 type (because it doesn't exist)
   Just _ ->
-    let fromTypeCtor = TH.ConT (TH.mkName $ fromUpDotName (upDotChBase l1.langName.base sName))
-        fromType = foldl AppT fromTypeCtor (TH.VarT . (.th) <$> l1.langParams)
-        toTypeCtor = TH.ConT (TH.mkName $ fromUpDotName (upDotChBase l2.langName.base sName))
-        toType = foldl AppT toTypeCtor (TH.VarT . (.th) <$> l2.langParams)
+    let fromTypeCtor = TH.ConT (TH.mkName $ fromUpDotName (upDotChBase l1.langName.name sName))
+        fromType = foldl AppT fromTypeCtor (TH.VarT . (.th) <$> l1.langInfo.langParams)
+        toTypeCtor = TH.ConT (TH.mkName $ fromUpDotName (upDotChBase l2.langName.name sName))
+        toType = foldl AppT toTypeCtor (TH.VarT . (.th) <$> l2.langInfo.langParams)
      in [XlateNontermDef{nontermName = sName,fromType,toType}]
 
 createAuto :: TypeDesc 'Valid -> MaybeT Q (TH.Name -> TH.Name -> Exp)
@@ -148,7 +151,7 @@ createAuto (CtorType tyName ts)
     pure auto
   | t:ts' <- reverse ts
   , all (not . containsGrammar) ts' = do
-      let travCandidate = foldl AppT (TH.ConT tyName.th) (interpretTypeDesc undefined <$> ts')
+      let travCandidate = foldl AppT (TH.ConT tyName.th) (interpretTypeDesc (Language undefined undefined) <$> ts')
       isTraversable <- M.lift $ TH.isInstance ''Traversable [travCandidate]
       if isTraversable then traversableAuto t else hoistNothing
   -- TODO maybe try Bitraversable
@@ -209,8 +212,8 @@ declareType x = do
     TH.addModFinalizer $ TH.putDoc (TH.DeclDoc name) $ unlines
       [ "No automatic translation for"
       , concat
-        [ "the v'", fromUpDotName (upDotChBase x.xlateFrom.langName.base hole.prodName), "' production "
-        , "of t'", fromUpDotName (upDotChBase x.xlateFrom.langName.base hole.nontermName), "'"
+        [ "the v'", fromUpDotName (upDotChBase x.xlateFrom.langName.name hole.prodName), "' production "
+        , "of t'", fromUpDotName (upDotChBase x.xlateFrom.langName.name hole.nontermName), "'"
         ]
       , "could be generated by Nanopass."
       ]
@@ -221,7 +224,7 @@ declareType x = do
     TH.addModFinalizer $ TH.putDoc (TH.DeclDoc name) $ unlines
       [ "This member allows you to override the default translation for"
       , unwords
-        [ "The", "t'" ++ fromUpDotName (upDotChBase x.xlateFrom.langName.base nonterm.nontermName) ++ "'"
+        [ "The", "t'" ++ fromUpDotName (upDotChBase x.xlateFrom.langName.name nonterm.nontermName) ++ "'"
         , "syntactic category."
         ]
       , "Produce a 'Just' value to override the automatic translation."
@@ -249,8 +252,8 @@ declareTypeI x = do
     TH.addModFinalizer $ TH.putDoc (TH.DeclDoc name) $ unlines
       [ "No automatic translation for"
       , concat
-        [ "the v'", fromUpDotName (upDotChBase x.xlateFrom.langName.base hole.prodName), "' production "
-        , "of t'", fromUpDotName (upDotChBase x.xlateFrom.langName.base hole.nontermName), "'"
+        [ "the v'", fromUpDotName (upDotChBase x.xlateFrom.langName.name hole.prodName), "' production "
+        , "of t'", fromUpDotName (upDotChBase x.xlateFrom.langName.name hole.nontermName), "'"
         ]
       , "could be generated by Nanopass."
       ]
@@ -261,7 +264,7 @@ declareTypeI x = do
     TH.addModFinalizer $ TH.putDoc (TH.DeclDoc name) $ unlines
       [ "This member allows you to override the default translation for"
       , unwords
-        [ "The", "t'" ++ fromUpDotName (upDotChBase x.xlateFrom.langName.base nonterm.nontermName) ++ "'"
+        [ "The", "t'" ++ fromUpDotName (upDotChBase x.xlateFrom.langName.name nonterm.nontermName) ++ "'"
         , "syntactic category."
         ]
       , "Produce a 'Just' value to override the automatic translation."
@@ -318,12 +321,12 @@ declareXlateLifter x = do
         delegate = (TH.VarE nameId `AppE` TH.VarE xlateVar) `AppE` TH.VarE varName
     pure (nameAp, lam)
 
-interpretTypeDesc :: Language 'Valid -> TypeDesc 'Valid -> TH.Type
+interpretTypeDesc :: Language 'Valid UpDotName -> TypeDesc 'Valid -> TH.Type
 interpretTypeDesc l = go
   where
   go (RecursiveType sName) =
-    let nontermCtor = TH.ConT (TH.mkName . fromUpDotName $ upDotChBase l.langName.base sName)
-     in foldl AppT nontermCtor (TH.VarT . (.th) <$> l.langParams)
+    let nontermCtor = TH.ConT (TH.mkName . fromUpDotName $ upDotChBase l.langName.name sName)
+     in foldl AppT nontermCtor (TH.VarT . (.th) <$> l.langInfo.langParams)
   go (VarType vName) = TH.VarT vName.th
   go (CtorType thName argDescs) = foldl AppT (TH.ConT thName.th) (go <$> argDescs)
   go (ListType argDesc) = AppT TH.ListT (go argDesc)
@@ -340,7 +343,7 @@ interpretTypeDesc l = go
 ------ Declare Descend Functions ------
 ---------------------------------------
 
-defineDescend :: Language 'Valid -> Language 'Valid -> XlateDef -> Q [Dec]
+defineDescend :: Language 'Valid UpDotName -> Language 'Valid UpDotName -> XlateDef -> Q [Dec]
 defineDescend l1 l2 xdef = do
   fmap concat . forM xdef.xlateNonterms $ \XlateNontermDef{nontermName} -> do
     let funName = TH.mkName $ "descend" ++ fromUpName nontermName
@@ -348,8 +351,8 @@ defineDescend l1 l2 xdef = do
     TH.addModFinalizer $ TH.putDoc (TH.DeclDoc funName) $ unlines
       [ unwords
         [ "Translate syntax trees starting from"
-        , "any t'" ++ fromUpDotName (upDotChBase l1.langName.base nontermName) ++ "' of the t'" ++ show l1.langName.th ++ "' language"
-        , "to the corresponding '" ++ fromUpDotName (upDotChBase l2.langName.base nontermName) ++ "' of the t'" ++ show l2.langName.th ++ "' language."
+        , "any t'" ++ fromUpDotName (upDotChBase l1.langName.name nontermName) ++ "' of the t'" ++ show l1.langName.th ++ "' language"
+        , "to the corresponding '" ++ fromUpDotName (upDotChBase l2.langName.name nontermName) ++ "' of the t'" ++ show l2.langName.th ++ "' language."
         ]
       , ""
       , "Some (hopefully most) of this function was automatically generated by nanopass."
@@ -362,8 +365,8 @@ defineDescend l1 l2 xdef = do
     TH.addModFinalizer $ TH.putDoc (TH.DeclDoc funNameId) $ unlines
       [ unwords
         [ "Translate syntax trees starting from"
-        , "any t'" ++ fromUpDotName (upDotChBase l1.langName.base nontermName) ++ "' of the t'" ++ show l1.langName.th ++ "' language"
-        , "to the corresponding '" ++ fromUpDotName (upDotChBase l2.langName.base nontermName) ++ "' of the t'" ++ show l2.langName.th ++ "' language."
+        , "any t'" ++ fromUpDotName (upDotChBase l1.langName.name nontermName) ++ "' of the t'" ++ show l1.langName.th ++ "' language"
+        , "to the corresponding '" ++ fromUpDotName (upDotChBase l2.langName.name nontermName) ++ "' of the t'" ++ show l2.langName.th ++ "' language."
         ]
       , ""
       , "This is the pure (i.e. no 'Applicative' required) version of '"++show funName++"'."
@@ -373,21 +376,21 @@ defineDescend l1 l2 xdef = do
     xlateVar <- TH.newName "xlate"
     termVar <- TH.newName "term"
     -- define the automatic case matching
-    autoMatches <- case Map.lookup nontermName l1.nonterms of
+    autoMatches <- case Map.lookup nontermName l1.langInfo.nonterms of
       Nothing -> errorWithoutStackTrace $ "nanopass internal error: failed to find a source nonterm that appears as an override: " ++ fromUpName nontermName
       Just Nonterm{productions} -> do
         -- go through all the productions for this syntactic category's type
         forM (Map.toAscList productions) $ \(_, prod) -> do
           args <- TH.newName `mapM` take (length prod.subterms) base26
           let pat = TH.ConP prod.prodName.th [] (TH.VarP <$> args)
-          let body = case findAuto nontermName prod.prodName.base xdef.xlateProds of
+          let body = case findAuto nontermName prod.prodName.name xdef.xlateProds of
                 -- if this production has a hole, call the hole
                 Just (Left _) ->
-                  let f = TH.mkName $ "on" ++ fromUpName nontermName ++ fromUpName prod.prodName.base
+                  let f = TH.mkName $ "on" ++ fromUpName nontermName ++ fromUpName prod.prodName.name
                       recurse = VarE f `AppE` VarE xlateVar
                    in foldl AppE recurse (VarE <$> args)
                 Just (Right auto) ->
-                  let e0 = VarE 'pure `AppE` TH.ConE (TH.mkName . fromUpDotName $ upDotChBase l2.langName.base prod.prodName.base)
+                  let e0 = VarE 'pure `AppE` TH.ConE (TH.mkName . fromUpDotName $ upDotChBase l2.langName.name prod.prodName.name)
                       iAppE a b = TH.InfixE (Just a) (VarE '(<*>)) (Just b)
                       es = zipWith ($) (auto.autoArgs <&> ($ xlateVar)) args
                    in foldl iAppE e0 es
@@ -414,10 +417,10 @@ defineDescend l1 l2 xdef = do
         appClass = TH.ConT ''Applicative `AppT` TH.VarT xdef.xlateFParam
         xlateArgTyCon = TH.ConT $ TH.mkName "Xlate"
         xlateArgTy = foldl AppT xlateArgTyCon (TH.VarT <$> xdef.xlateParams ++ [xdef.xlateFParam])
-        l1ArgTyCon = TH.ConT $ TH.mkName . fromUpDotName $ upDotChBase l1.langName.base nontermName
-        l1ArgTy = foldl AppT l1ArgTyCon (TH.VarT . (.th) <$> l1.langParams)
-        l2ResTyCon = TH.ConT $ TH.mkName . fromUpDotName $ upDotChBase l2.langName.base nontermName
-        l2ResTyCore = foldl AppT l2ResTyCon (TH.VarT . (.th) <$> l2.langParams)
+        l1ArgTyCon = TH.ConT $ TH.mkName . fromUpDotName $ upDotChBase l1.langName.name nontermName
+        l1ArgTy = foldl AppT l1ArgTyCon (TH.VarT . (.th) <$> l1.langInfo.langParams)
+        l2ResTyCon = TH.ConT $ TH.mkName . fromUpDotName $ upDotChBase l2.langName.name nontermName
+        l2ResTyCore = foldl AppT l2ResTyCon (TH.VarT . (.th) <$> l2.langInfo.langParams)
         l2ResTy = AppT (TH.VarT xdef.xlateFParam) l2ResTyCore
     let quantifierId = flip TH.PlainTV TH.InferredSpec <$> xdef.xlateParams
         xlateArgTyConId = TH.ConT $ TH.mkName "XlateI"

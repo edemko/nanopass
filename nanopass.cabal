@@ -28,8 +28,10 @@ library
   exposed-modules:
     Language.Nanopass
     Nanopass.Internal
+    Nanopass.Internal.Extend
     Nanopass.Internal.Parser
     Nanopass.Internal.Representation
+    Nanopass.Internal.Validate
   other-modules:
     Language.Nanopass.LangDef
     Language.Nanopass.QQ

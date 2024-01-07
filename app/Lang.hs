@@ -17,18 +17,18 @@ data Foo a b c = Foo [c]
 ((L0 funny)
   (Expr
     (Var String)
-    (Lam String (* ($ Stmt)))
-    (App ($ Expr) ($ Expr))
+    (Lam String (* Stmt))
+    (App Expr Expr)
     (Nope String)
     (UhOh (&
-      (* (First ($ Expr)))
-      (* ($ Expr))
-      (Foo (Int) (Int) ($ Expr))
+      (* (First Expr))
+      (* Expr)
+      (Foo (Int) (Int) Expr)
     ))
   )
   (Stmt
-    (Expr funny ($ Expr))
-    (Let String ($ Expr))
+    (Expr funny Expr)
+    (Let String Expr)
   )
 )
 |]

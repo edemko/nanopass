@@ -11,12 +11,12 @@ module Language.Nanopass.LangDef
   , defineLang
   , reifyLang
   , runModify
-  , modifyLang
   ) where
 
 import Nanopass.Internal.Representation
 
 import Control.Monad (forM,forM_,foldM,when)
+import Nanopass.Internal.Extend (extendLang)
 import Control.Monad.State (StateT,gets,modify,evalStateT)
 import Data.Bifunctor (second)
 import Data.Functor ((<&>))
@@ -28,8 +28,10 @@ import Language.Haskell.TH (Q, Dec)
 
 import qualified Control.Monad.Trans as M
 import qualified Data.Map as Map
+import qualified Data.Text.Lazy as LT
 import qualified Language.Haskell.TH as TH
 import qualified Language.Haskell.TH.Syntax as TH
+import qualified Text.Pretty.Simple as PP
 
 ---------------------------------
 ------ Language Definition ------
@@ -50,45 +52,45 @@ runDefine = flip evalStateT st0
     , nontermNames = Map.empty
     }
 
-defineLang :: Language 'Valid -> Define [Dec]
+defineLang :: Language 'Valid UpName -> Define [Dec]
 defineLang l = do
   -- initialize language type variables
-  let duplicateParams = l.langParams \\ nub l.langParams
+  let duplicateParams = l.langInfo.langParams \\ nub l.langInfo.langParams
   if not (null duplicateParams)
     then fail $ concat
       [ "in a nanopass language definition: "
       , "duplicate language parameter names "
       , show (nub duplicateParams)
       ]
-    else modify $ \st -> st{ langTyvars = (.th) <$> l.langParams }
+    else modify $ \st -> st{ langTyvars = (.th) <$> l.langInfo.langParams }
   -- initialize nontermNames
-  forM_ l.nonterms $ \nonterm -> do
+  forM_ l.langInfo.nonterms $ \nonterm -> do
     knownNames <- gets nontermNames
-    case Map.lookup nonterm.nontermName.base knownNames of
+    case Map.lookup nonterm.nontermName.name knownNames of
       Nothing -> modify $ \st ->
-        st{nontermNames = Map.insert nonterm.nontermName.base nonterm.nontermName.th knownNames}
+        st{nontermNames = Map.insert nonterm.nontermName.name nonterm.nontermName.th knownNames}
       Just _ -> fail $ concat [ "in a nanopass language definition: "
                               , "duplicate non-terminal (terminal/nonterminal) name "
-                              , fromUpName nonterm.nontermName.base
+                              , fromUpName nonterm.nontermName.name
                               ]
   -- define a type with one nullary ctor for every grammatical type
-  langInfo <- defineLanginfo l
+  langInfo <- defineLangHeader l
   -- define every nonterminal type
   params <- gets langTyvars <&> \tvs -> tvs <&> \tv -> TH.PlainTV tv ()
-  nontermTypeDecs <- forM (Map.elems l.nonterms) $ \nonterm -> do
+  nontermTypeDecs <- forM (Map.elems l.langInfo.nonterms) $ \nonterm -> do
     M.lift $ TH.addModFinalizer $ TH.putDoc (TH.DeclDoc nonterm.nontermName.th) $
-      "This type is a non-terminal of the t'" ++ fromUpDotName l.langName.base ++ "' language."
+      "This type is a non-terminal of the t'" ++ fromUpName l.langName.name ++ "' language."
     prodCtors <- defineProduction `mapM` Map.elems nonterm.productions
     pure $ TH.DataD [] nonterm.nontermName.th params Nothing
             prodCtors
             []
   pure $ langInfo : nontermTypeDecs
 
-defineLanginfo :: Language 'Valid -> Define Dec
-defineLanginfo l = do
+defineLangHeader :: Language 'Valid UpName -> Define Dec
+defineLangHeader l = do
   nontermNames <- gets $ Map.toAscList . nontermNames
   ctors <- forM nontermNames $ \(nontermName, _) -> do
-    let ctorName = TH.mkName $ fromUpDotName l.langName.base ++ "_" ++ fromUpName nontermName
+    let ctorName = TH.mkName $ fromUpName l.langName.name ++ "_" ++ fromUpName nontermName
     M.lift $ TH.addModFinalizer $ TH.putDoc (TH.DeclDoc ctorName) $
       "Serves as a reference to the non-terminal of t'" ++ fromUpName nontermName ++ "'s."
     pure $ TH.NormalC ctorName []
@@ -99,17 +101,17 @@ defineLanginfo l = do
       , "It serves as a reference to the types of syntactic categories in the language."
       , "Nanopass itself uses types like these to read back in a full language that was defined in a separate splice/quasiquote."
       ]
-    , case (l.baseDefdLang, l.originalProgram) of
-      (Just l0, Just origProg) -> unlines
+    , case (l.langInfo.baseDefdLang, l.langInfo.originalProgram) of
+      (Just baseLang, Just origProg) -> unlines
         [ ""
-        , "This language was generated based on the langauge t'" ++ show l0.langName.th ++ "'"
+        , "This language was generated based on the langauge t'" ++ show baseLang.langName.th ++ "'"
         , "using the following 'Language.Nanopass.deflang' program:"
         , ""
         , unlines . fmap ("> " ++) . lines $ origProg
         ]
-      (Just l0, Nothing) -> unlines
+      (Just baseLang, Nothing) -> unlines
         [ ""
-        , "This language was generated based on the langauge t'" ++ show l0.langName.th ++ "'."
+        , "This language was generated based on the langauge t'" ++ show baseLang.langName.th ++ "'."
         ]
       (Nothing, Just origProg) -> unlines
         [ ""
@@ -176,8 +178,8 @@ subtermType (TupleType t1 t2 ts) = do
 -- given a string, we need to find the language info with that name in scope,
 -- then decode each of the info's constructors into the names of grammar types,
 -- then decode each grammar type
-reifyLang :: UpDotName -> Q (Language 'Valid)
-reifyLang langName = do
+reifyLang :: UpDotName -> Q (Language 'Valid UpDotName)
+reifyLang lName = do
   (langNameTH, nontermPtrs) <- findLangInfo
   -- determine the language's grammar types
   thNonterms <- findRecursiveType `mapM` nontermPtrs
@@ -189,11 +191,11 @@ reifyLang langName = do
     case duplicatePNames of
       [] -> pure Nonterm
         { nontermName = ValidName nontermName nontermNameTH
-        , productions = Map.fromList (ctorList <&> \ctor -> (ctor.prodName.base, ctor))
+        , productions = Map.fromList (ctorList <&> \ctor -> (ctor.prodName.name, ctor))
         }
       _ -> fail $ "corrupt language has duplicate production names: " ++ show (nub duplicatePNames)
   -- disallowing duplicates here allows `decodeType.recurse` to produce `RecursiveType`s easily
-  let nontermTypes = nontermTypeList <&> \t -> (t.nontermName.base, t)
+  let nontermTypes = nontermTypeList <&> \t -> (t.nontermName.name, t)
       nontermNames = fst <$> nontermTypes
       duplicateSNames = nontermNames \\ nub nontermNames
   when (not $ null duplicateSNames) $ fail $
@@ -216,11 +218,13 @@ reifyLang langName = do
         [ "corrupt language has non-lowercase type parameter: ", show rawTv ]
   -- and we're done
   pure $ Language
-    { langName = ValidName langName langNameTH
-    , langParams
-    , nonterms = Map.fromList nontermTypes
-    , originalProgram = Nothing
-    , baseDefdLang = Nothing
+    { langName = ValidName lName langNameTH
+    , langInfo = LanguageInfo
+      { langParams
+      , nonterms = Map.fromList nontermTypes
+      , originalProgram = Nothing
+      , baseDefdLang = Nothing
+      }
     }
   where
   -- this is here because TH will add a bunch of garbage on the end of a type variable to ensure it doesn't capture,
@@ -282,8 +286,8 @@ reifyLang langName = do
       loop (TH.AppT inner lastArg) = second (lastArg:) (loop inner)
       loop t = (t, [])
   findLangInfo :: Q (TH.Name, [TH.Con]) -- name and constructors of the info type
-  findLangInfo = TH.lookupTypeName (fromUpDotName langName) >>= \case
-    Nothing -> fail $ "in a nanopass language extension: could not find base language " ++ fromUpDotName langName
+  findLangInfo = TH.lookupTypeName (fromUpDotName lName) >>= \case
+    Nothing -> fail $ "in a nanopass language extension: could not find base language " ++ fromUpDotName lName
     Just langNameTH -> TH.reify langNameTH >>= \case
       TH.TyConI (TH.DataD [] qualThLangName [] Nothing nontermNames _) -> pure (qualThLangName, nontermNames)
       otherInfo -> fail $ concat
@@ -293,19 +297,19 @@ reifyLang langName = do
         ]
   findRecursiveType :: TH.Con -> Q (UpName, TH.Name, [TH.Name], [TH.Con])
   findRecursiveType (TH.NormalC thTypePtr []) = do
-    let enumPrefix = (fromUpName . upDotBase) langName ++ "_"
+    let enumPrefix = (fromUpName . upDotBase) lName ++ "_"
     typePtrBase <- case stripPrefix enumPrefix (TH.nameBase thTypePtr) of
       Just base | Just it <- toUpName base -> pure it
         | otherwise -> fail $ concat
-          [ "in a nanopass language extension: base name " ++ (fromUpName . upDotBase) langName ++ " is illegal: "
+          [ "in a nanopass language extension: base name " ++ (fromUpName . upDotBase) lName ++ " is illegal: "
           , "  it must be an UpperCaseName, but got: " ++ base
           ]
       Nothing -> fail $ concat
-        [ "in a nanopass language extension: base name " ++ (fromUpName . upDotBase) langName ++ " does not identify a language:\n"
+        [ "in a nanopass language extension: base name " ++ (fromUpName . upDotBase) lName ++ " does not identify a language:\n"
         , "  expecting language info enum ctors to start with " ++ enumPrefix ++ ", but got name: "
         , "  " ++ TH.nameBase thTypePtr
         ]
-    let typePtr = TH.mkName $ fromUpDotName $ upDotChBase langName typePtrBase
+    let typePtr = TH.mkName $ fromUpDotName $ upDotChBase lName typePtrBase
     TH.reify typePtr >>= \case
       TH.TyConI (TH.DataD [] nontermNameTH thParams _ ctors _) -> do
         nontermName <- case toUpName $ TH.nameBase nontermNameTH of
@@ -315,7 +319,7 @@ reifyLang langName = do
         pure (nontermName, nontermNameTH, thParamNames, ctors)
       otherType -> fail $ "corrupt language non-terminal type:\n" ++ show otherType
   findRecursiveType otherCtor = fail $ concat
-    [ "in a nanopass language extension: base name " ++ (fromUpName . upDotBase) langName ++ " does not identify a language: "
+    [ "in a nanopass language extension: base name " ++ (fromUpName . upDotBase) lName ++ " does not identify a language: "
     , "  expecting language name to identify an enum, but got this constructor:\n"
     , "  " ++ show otherCtor
     ]
@@ -327,128 +331,10 @@ reifyLang langName = do
 runModify :: LangMod -> Q [Dec]
 runModify lMod = do
   oldLang <- reifyLang lMod.baseLang
-  modifyLang oldLang lMod
-
-modifyLang :: Language 'Valid -> LangMod -> Q [Dec]
-modifyLang defd mods = do
-  defd' <- restrictLang defd mods.nontermsEdit
-  -- TODO I think it's at this point that I can generate the default translation
-  lang' <- extendLang (remakeLanguageNames defd') mods
+  lang' <- case extendLang oldLang lMod of
+    Right ok -> pure ok
+    Left err -> fail $ (LT.unpack . PP.pShow) err -- TODO
   runDefine $ defineLang lang'
-
-restrictLang :: Language 'Valid -> [NontermsEdit] -> Q (Language 'Valid)
-restrictLang = foldM doNonterm
-  where
-  doNonterm :: Language 'Valid -> NontermsEdit -> Q (Language 'Valid)
-  doNonterm l (AddNonterm _) = pure l
-  doNonterm l (DelNonterm sName) = case Map.lookup sName l.nonterms of
-    Just _ -> pure $ l{ nonterms = Map.delete sName l.nonterms }
-    Nothing -> fail $ concat
-      [ "in nanopass language extention: "
-      , "attempt to delete non-existent non-terminal "
-      , fromUpName sName ++ " from " ++ show l.langName.th
-      ]
-  doNonterm l (ModNonterm sName prodMods) = case Map.lookup sName l.nonterms of
-    Just nonterm -> do
-      nonterm' <- foldM doProds nonterm prodMods
-      pure l{ nonterms = Map.insert sName nonterm' l.nonterms }
-    Nothing -> fail $ concat
-      [ "in nanopass language extension: "
-      , "attempt to modify non-existent non-terminal "
-      , fromUpName sName ++ " from " ++ show l.langName.th
-      ]
-    where
-    doProds :: Nonterm 'Valid -> ProductionsEdit -> Q (Nonterm 'Valid)
-    doProds s (AddProd _) = pure s
-    doProds s (DelProd pName) = case Map.lookup pName s.productions of
-      Just _ -> pure $ s{ productions = Map.delete pName s.productions }
-      Nothing -> fail $ concat
-        [ "in nanopass language extention: "
-        , "attempt to delete non-existent term constructor "
-        , fromUpName sName ++ " from " ++ show s.nontermName ++ " in " ++ show l.langName.th
-        ]
-
-remakeLanguageNames :: Language 'Valid -> Language 'Valid
-remakeLanguageNames l = l
-  { nonterms = remakeNontermNames <$> l.nonterms
-  }
-
-remakeNontermNames :: Nonterm 'Valid -> Nonterm 'Valid
-remakeNontermNames nt = Nonterm
-  { nontermName = ValidName nt.nontermName.base (TH.mkName $ fromUpName nt.nontermName.base)
-  , productions = nt.productions
-  }
-
-extendLang :: Language 'Valid -> LangMod -> Q (Language 'Valid)
-extendLang l lMods = do
-  nonterms0 <- doNonterm lMods.nontermsEdit `mapM` Map.elems l.nonterms
-  let nonterms = nonterms0 ++ catAddNonterm lMods.nontermsEdit
-  pure $ Language
-    { langName = ValidName (unDotted lMods.newLang) (TH.mkName $ fromUpName lMods.newLang)
-    , langParams = lMods.newParams <&> \n -> ValidName n (TH.mkName $ fromLowName n)
-    , nonterms = Map.fromList $ nonterms <&> \s -> (s.nontermName.base, s)
-    , originalProgram = lMods.originalModProgram
-    , baseDefdLang = Just l
-    }
-  where
-  -- | takes a non-terminal from the base language to the new language
-  doNonterm :: [NontermsEdit] -> Nonterm 'Valid -> Q (Nonterm 'Valid)
-  doNonterm gMods nonterm0 = do
-    let prodList
-          =  doProd <$> Map.elems nonterm0.productions
-          ++ catAddProd nonterm0.nontermName.base gMods
-    pure Nonterm
-      { nontermName = nonterm0.nontermName
-      -- , nontermNameTH = TH.mkName $ fromUpName nonterm0.nontermName -- DELME
-      , productions = Map.fromList $ prodList <&> \prod -> (prod.prodName.base, prod)
-      }
-  -- | takes a production from the base language to the new language
-  doProd :: Production 'Valid -> Production 'Valid
-  doProd prod@Production{} = prod{ prodName = ValidName prod.prodName.base (TH.mkName $ fromUpName prod.prodName.base) }
-  catAddNonterm :: [NontermsEdit] -> [Nonterm 'Valid]
-  catAddNonterm (AddNonterm s : moreSMods) = forceValidNonterm s : catAddNonterm moreSMods
-  catAddNonterm (_ : moreSMods) = catAddNonterm moreSMods
-  catAddNonterm [] = []
-  catAddProd :: UpName -> [NontermsEdit] -> [Production 'Valid]
-  catAddProd sName (ModNonterm toName prodMods : moreSMods)
-    | toName == sName = go prodMods ++ catAddProd sName moreSMods
-    where
-    go (AddProd p : morePMods) = forceValidProd p : go morePMods
-    go (_ : morePMods) = go morePMods
-    go [] = []
-  catAddProd sName (_ : morePMods) = catAddProd sName morePMods
-  catAddProd _ [] = []
-
-forceValidNonterm :: Nonterm 'Unvalidated -> Nonterm 'Valid -- DELME
-forceValidNonterm nt = Nonterm
-  { nontermName = forceValidUpName nt.nontermName
-  , productions = forceValidProd <$> nt.productions
-  }
-
-forceValidProd :: Production 'Unvalidated -> Production 'Valid -- DELME
-forceValidProd p = Production
-  { prodName = forceValidUpName p.prodName
-  , subterms = forceValidType <$> p.subterms
-  }
-
-forceValidType :: TypeDesc 'Unvalidated -> TypeDesc 'Valid
-forceValidType (RecursiveType n) = RecursiveType n
-forceValidType (VarType n) = VarType (forceValidLowName n)
-forceValidType (CtorType n ts) = CtorType (forceValidUpDotName n) (forceValidType <$> ts)
-forceValidType (ListType t) = ListType (forceValidType t)
-forceValidType (MaybeType t) = MaybeType (forceValidType t)
-forceValidType (NonEmptyType t) = NonEmptyType (forceValidType t)
-forceValidType UnitType = UnitType
-forceValidType (TupleType t1 t2 ts) = TupleType (forceValidType t1) (forceValidType t2) (forceValidType <$> ts)
-
-forceValidLowName :: Name 'Unvalidated LowName -> Name 'Valid LowName
-forceValidLowName n = ValidName n.name (TH.mkName $ fromLowName n.name)
-
-forceValidUpName :: Name 'Unvalidated UpName -> Name 'Valid UpName
-forceValidUpName n = ValidName n.name (TH.mkName $ fromUpName n.name)
-
-forceValidUpDotName :: Name 'Unvalidated UpDotName -> Name 'Valid UpDotName
-forceValidUpDotName n = ValidName n.name (TH.mkName $ fromUpDotName n.name)
 
 ------------------------
 ------ TH Helpers ------

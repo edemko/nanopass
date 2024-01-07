@@ -18,11 +18,12 @@ import Data.Functor ((<&>))
 import Language.Haskell.TH (Q, Dec)
 import Language.Haskell.TH.Quote (QuasiQuoter(..))
 import Language.Nanopass.Xlate (mkXlate)
+import Nanopass.Internal.Validate (validateLanguage)
+import Nanopass.Internal.Parser (parseLanguage,Loc(..))
 import Text.Parse.Stupid (Sexpr(..))
 
 import qualified Data.Text.Lazy as LT
 import qualified Language.Haskell.TH as TH
-import qualified Nanopass.Internal.Parser as Parser
 import qualified Text.Parse.Stupid as Stupid
 import qualified Text.Pretty.Simple as PP
 
@@ -36,13 +37,15 @@ deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
   where
   go :: String -> Q [Dec]
   go input = do
-    loc <- TH.location <&> \l -> Parser.Loc
-        { Parser.file = l.loc_filename
-        , Parser.line = fst l.loc_start
-        , Parser.col = snd l.loc_start
+    loc <- TH.location <&> \l -> Loc
+        { file = l.loc_filename
+        , line = fst l.loc_start
+        , col = snd l.loc_start
         }
-    case Parser.parseLanguage (loc, input) of
-      (Right (Left def)) -> runDefine $ defineLang def
+    case parseLanguage (loc, input) of
+      (Right (Left def)) -> case validateLanguage def of
+        Right ok -> runDefine $ defineLang ok
+        Left err -> fail $ (LT.unpack . PP.pShow) err -- TODO
       (Right (Right mod)) -> runModify mod
       Left err -> fail $ (LT.unpack . PP.pShow) err -- TODO
   bad ctx _ = fail $ "`deflang` quasiquoter cannot be used in " ++ ctx ++ " context,\n\

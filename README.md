@@ -57,13 +57,11 @@ import Language.Nanopass (deflang)
 (Lambda
   (Expr
     (Var String)
-    (Lam String ($ Expr))
-    (App ($ Expr) ($ Expr))
+    (Lam String Expr)
+    (App Expr Expr)
   )
 )|]
 ```
-Each recursive call back into a language non-terminal must be prefixed with the `$` operator
-to distinguish it from ordinary Haskell data types.
 
 Then, in a separate module, we will define λₗₑₜ by modifying our existing λ implementation.
 It's best to put each language in its own module.
@@ -82,14 +80,14 @@ import qualified Lambda as L0
 (LambdaLet from L0.Lambda
   (* Expr
     (+ Let
-      (+ (& String ($ Expr)))
-      ($ Expr)
+      (+ (& String Expr))
+      Expr
     )
   )
 )|]
 ```
 This says that we will modify the `(* Expr …)` non-terminal by adding a production `(+ Let …)`.
-Note that in `(+ (& String ($ Expr)))`, we defined a `NonEmpty` with the `+` operator, and a tuple with the `&` operator.
+Note that in `(+ (& String Expr))`, we defined a `NonEmpty` with the `+` operator, and a tuple with the `&` operator.
 Even academic authors sometimes don't avail themselves of such data structures, but we eliminated a non-terminal for free!
 
 ```
@@ -260,9 +258,9 @@ Production ::=
      <string…>    documentation
      <Type…>)     constructor arguments
 
-Type ::= ('$' <UpCase name>)            non-terminal (language parameters already applied)
-     |  <lowCase name>                 type parameter
+Type ::= <lowCase name>                 type parameter
      |  <UpColonName>                  plain Haskell type (kind *)
+                                       or non-terminal (language parameters already applied)
      |  (<UpColonName> <Type…>)        plain Haskell type application
      |  ('?' <Type>)                   Maybe type
      |  ('*' <Type>)                   List type

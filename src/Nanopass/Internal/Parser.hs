@@ -14,7 +14,8 @@
 module Nanopass.Internal.Parser
   (
   -- * Recognizers
-    parseLanguage
+    ParseResult
+  , parseLanguage
   -- ** Base Languages
   , parseBaseLanguage
   , parseNonterm
@@ -46,7 +47,6 @@ import Text.Megaparsec.Pos (defaultTabWidth,mkPos)
 import Text.SExpression (SExpr(..),Parser,parseSExpr,def)
 
 import qualified Data.Map as Map
-import qualified Language.Haskell.TH as TH
 import qualified Text.Megaparsec as P
 import qualified Text.Megaparsec.Char.Lexer as P
 
@@ -54,13 +54,17 @@ import qualified Text.Megaparsec.Char.Lexer as P
 ------ Glue it together ------
 ------------------------------
 
+type ParseResult = Either
+  (Language 'Unvalidated UpName)  -- ^ base language defintion
+  LangMod -- ^ modifications to a language
+
 -- | @
 -- Language ::= \<BaseLang\> | \<LangMod\>
 -- @
 --
 -- * for @BaseLang@, see 'parseBaseLanguage'
 -- * for @LangMod@, see 'parseLangMod'
-parseLanguage :: (Loc, String) -> Either Error (Either (Language 'Valid) LangMod)
+parseLanguage :: (Loc, String) -> Either Error ParseResult
 parseLanguage inp@(_, orig) = do
   sexpr <- getSexpr inp
   case sexpr of
@@ -80,19 +84,21 @@ parseLanguage inp@(_, orig) = do
 --
 -- * for @LangLHS@, see 'parseLangLHS'
 -- * for @Nonterm@, see 'parseNonterm'
-parseBaseLanguage :: String -> SExpr -> Either Error (Language 'Valid)
+parseBaseLanguage :: String -> SExpr -> Either Error (Language 'Unvalidated UpName)
 parseBaseLanguage originalProgram (List (lhs:rest)) = do
   (name, langParams) <- parseLangLHS lhs
-  let langName = ValidName (unDotted name) (TH.mkName $ fromUpName name)
+  let langName = SourceName name
       (docs, nonterms_) = spanDocstrs rest
   nontermList <- parseNonterm `mapM` nonterms_
-  let nonterms = Map.fromList $ nontermList <&> \s -> (s.nontermName.base, s)
+  let nonterms = Map.fromList $ nontermList <&> \s -> (s.nontermName.name, s)
   pure Language
     { langName
-    , langParams = langParams <&> \n -> ValidName n (TH.mkName $ fromLowName n)
-    , nonterms
-    , originalProgram = Just originalProgram
-    , baseDefdLang = Nothing
+    , langInfo = LanguageInfo
+      { langParams = SourceName <$> langParams
+      , nonterms
+      , originalProgram = Just originalProgram
+      , baseDefdLang = Nothing
+      }
     }
 parseBaseLanguage _ other = Left $ ExpectingLanguage other
 
@@ -126,7 +132,7 @@ parseLangLHS it = Left $ ExpectedLangLHS it
 --
 -- * for @UpCase@, see 'toUpName'
 -- * for @Production@, see 'parseProduction'
-parseNonterm :: SExpr -> Either Error (Nonterm 'Valid)
+parseNonterm :: SExpr -> Either Error (Nonterm 'Unvalidated)
 parseNonterm (List (Atom str:rest)) = do
   nontermName <- case toUpName str of
     Just name -> pure name
@@ -136,13 +142,13 @@ parseNonterm (List (other:_)) = Left $ ExpectedNontermName (Just other)
 parseNonterm other = Left $ ExpectedNonterm other
 
 -- | Separated out from 'parseNonterm' because it is useful in 'parseNontermsEdit' as well.
-parseNontermBody :: UpName -> [SExpr] -> Either Error (Nonterm 'Valid)
+parseNontermBody :: UpName -> [SExpr] -> Either Error (Nonterm 'Unvalidated)
 parseNontermBody nontermName rest = do
   let (docs, prods_) = spanDocstrs rest
   productionList <- parseProduction `mapM` prods_
-  let productions = Map.fromList $ productionList <&> \p -> (p.prodName.base, p)
+  let productions = Map.fromList $ productionList <&> \p -> (p.prodName.name, p)
   pure Nonterm
-    { nontermName = ValidName nontermName (TH.mkName $ fromUpName nontermName)
+    { nontermName = SourceName nontermName
     , productions
     }
 
@@ -155,7 +161,7 @@ parseNontermBody nontermName rest = do
 --
 -- * for @UpCase@, see 'toUpName'
 -- * for @Type@, see 'parseType'
-parseProduction :: SExpr -> Either Error (Production 'Valid)
+parseProduction :: SExpr -> Either Error (Production 'Unvalidated)
 parseProduction (List (Atom ctorStr:rest)) = do
   prodName <- case toUpName ctorStr of
     Just name -> pure name
@@ -164,19 +170,19 @@ parseProduction (List (Atom ctorStr:rest)) = do
 parseProduction other = Left $ ExpectedProduction other
 
 -- | Separated out from 'parseProduction' because it is useful in 'parseProductionsEdit' as well.
-parseProductionBody :: UpName -> [SExpr] -> Either Error (Production 'Valid)
+parseProductionBody :: UpName -> [SExpr] -> Either Error (Production 'Unvalidated)
 parseProductionBody prodName rest = do
   let (docs, args) = spanDocstrs rest
   subterms <- parseType `mapM` args
   pure Production
-    { prodName = ValidName prodName (TH.mkName $ fromUpName prodName)
+    { prodName = SourceName prodName
     , subterms
     }
 
 -- | @
--- Type ::= (\'$\' \<UpCase name\>)            non-terminal (language parameters already applied)
---       |  \<lowCase name\>                 type parameter
+-- Type ::= \<lowCase name\>                 type parameter
 --       |  \<UpColonName\>                  plain Haskell type (kind *)
+--                                         or non-terminal (language parameters already applied)
 --       |  (\<UpColonName\> \<Type…\>)        plain Haskell type application
 --       |  (\'?\' \<Type\>)                   Maybe type
 --       |  (\'*\' \<Type\>)                   List type
@@ -190,22 +196,15 @@ parseProductionBody prodName rest = do
 -- * for @UpCase@, see 'toUpName'
 -- * for @LowCase@, see 'toLowName'
 -- * for @UpColonCase@, see 'toUpColonName'
-parseType :: SExpr -> Either Error (TypeDesc 'Valid)
+parseType :: SExpr -> Either Error (TypeDesc 'Unvalidated)
 parseType = \case
   Atom str
     | Just name <- toUpColonName str
-      -> pure $ CtorType (ValidName name (TH.mkName $ fromUpDotName name)) []
+      -> pure $ CtorType (SourceName name) []
     | Just name <- toLowName str
-      -> pure $ VarType (ValidName name (TH.mkName $ fromLowName name))
+      -> pure $ VarType (SourceName name)
     | otherwise -> Left $ ExpectingTypeNameOrVar str
   List [] -> pure UnitType
-  List (Atom "$" : rest) -> case rest of
-    [Atom str]
-      | Just name <- toUpName str -> pure $ RecursiveType name
-      | otherwise -> Left $ ExpectedNontermName (Just $ Atom str)
-    [x] -> Left $ ExpectedNontermName (Just x)
-    (_:x:_) -> Left $ UnexpectedSExprAfterNonterminal x
-    [] -> Left $ ExpectedNontermName Nothing
   List [Atom "?", x] -> MaybeType <$> parseType x
   List [Atom "*", x] -> ListType <$> parseType x
   List [Atom "+", x] -> NonEmptyType <$> parseType x
@@ -222,7 +221,7 @@ parseType = \case
       Atom str | Just name <- toUpColonName str -> pure name
       _ -> Left $ ExpectedTypeConstructor x
     ts <- parseType `mapM` xs
-    pure $ CtorType (ValidName ctor (TH.mkName $ fromUpDotName ctor)) ts
+    pure $ CtorType (SourceName ctor) ts
   x@(ConsList _ _) -> Left $ ConsListsDisallowed x
   x@(Number _) -> Left $ UnexpectedLiteral x
   x@(String _) -> Left $ UnexpectedLiteral x
@@ -262,7 +261,7 @@ parseLangMod originalModProgram (List (lhs:Atom "from":rest_)) = do
   pure LangMod
     { baseLang
     , newLang
-    , newParams
+    , newParams = SourceName <$> newParams
     , nontermsEdit = edits
     , originalModProgram = Just originalModProgram
     }
@@ -290,7 +289,7 @@ parseNontermsEdit (List (Atom "+":rest_)) = do
     other:_ -> Left $ ExpectedNontermName (Just other)
     [] -> Left $ ExpectedNontermName Nothing
   nonterm <- parseNontermBody nontermName rest
-  pure $ AddNonterm (forceUnvalidateNonterm nonterm)
+  pure $ AddNonterm nonterm
 parseNontermsEdit (List (Atom "-":rest_)) = do
   (nontermName, rest) <- case rest_ of
     (Atom str):rest | Just name <- toUpName str -> pure (name, rest)
@@ -310,12 +309,6 @@ parseNontermsEdit (List (Atom "*":rest_)) = do
 parseNontermsEdit (List (other:_)) = Left $ ExpectingPlusMinusStar other
 parseNontermsEdit other = Left $ ExpectingNontermsEdit other
 
-forceUnvalidateNonterm :: Nonterm 'Valid -> Nonterm 'Unvalidated -- DELME
-forceUnvalidateNonterm Nonterm{nontermName,productions} = Nonterm
-  { nontermName = SourceName nontermName.base
-  , productions = forceUnvalidatedProd <$> productions
-  }
-
 -- | @
 -- ProductionsEdit
 --   ::= (\'+\'              add a production
@@ -334,7 +327,7 @@ parseProductionsEdit (List (Atom "+":rest_)) = do
     other:_ -> Left $ ExpectedConstructorName (Just other)
     [] -> Left $ ExpectedConstructorName Nothing
   prod <- parseProductionBody prodName rest
-  pure $ AddProd (forceUnvalidatedProd prod)
+  pure $ AddProd prod
 parseProductionsEdit (List (Atom "-":rest_)) = do
   (prodName, rest) <- case rest_ of
     (Atom str):rest | Just name <- toUpName str -> pure (name, rest)
@@ -346,23 +339,6 @@ parseProductionsEdit (List (Atom "-":rest_)) = do
   pure $ DelProd prodName
 parseProductionsEdit (List (other:_)) = Left $ ExpectingPlusMinus other
 parseProductionsEdit other = Left $ ExpectingProductionsEdit other
-
-forceUnvalidatedProd :: Production 'Valid -> Production 'Unvalidated -- DELME
-forceUnvalidatedProd Production{prodName,subterms} = Production
-  { prodName = SourceName prodName.base
-  , subterms = forceUnvalidatedType <$> subterms
-  }
-
-forceUnvalidatedType :: TypeDesc 'Valid -> TypeDesc 'Unvalidated -- DELME
-forceUnvalidatedType (RecursiveType n) = RecursiveType n
-forceUnvalidatedType (VarType n) = VarType (SourceName n.base)
-forceUnvalidatedType (CtorType n ts) = CtorType (SourceName n.base) (forceUnvalidatedType <$> ts)
-forceUnvalidatedType (ListType t) = ListType (forceUnvalidatedType t)
-forceUnvalidatedType (MaybeType t) = MaybeType (forceUnvalidatedType t)
-forceUnvalidatedType (NonEmptyType t) = NonEmptyType (forceUnvalidatedType t)
-forceUnvalidatedType UnitType = UnitType
-forceUnvalidatedType (TupleType t1 t2 ts) = TupleType (forceUnvalidatedType t1) (forceUnvalidatedType t2) (forceUnvalidatedType <$> ts)
-
 
 ---------------------------------
 ------ Parse S-Expressions ------
@@ -436,9 +412,23 @@ data Error
   | ExpectedConstructorName (Maybe SExpr)
   | ExpectedProduction SExpr
   -- parseType
-  | UnexpectedSExprAfterNonterminal SExpr
   | ExpectingTypeNameOrVar String
   | ExpectedTypeConstructor SExpr
   | UnexpectedLiteral SExpr
   | ConsListsDisallowed SExpr
+  | UnexpectedTypeApplicationstoRecursiveType UpName
+  -- validation
+  | DuplicateLanguageParams [LowName]
+  | UnrecognizedNonterm UpName
+  | UnrecognizedTypeVariable LowName
+  -- modification
+  | IllegalNontermAddedAlsoDeleted UpName -- ^ nonterm was both added and deleted by a language modifier
+  | IllegalNontermModificationAlsoAdded UpName -- ^ nonterm was both added and modified by a language modifier
+  | IllegalNontermModificationAlsoDeleted UpName -- ^ nonterm was both modified and deleted by a language modifier
+  | IllegalNontermAdded UpName -- ^ nonterminal was already present in base language
+  | IllegalNontermModified UpName -- ^ nonterminal was not present in base language
+  | IllegalNontermDeleted UpName -- ^ nonterminal was not present in base language
+  | DuplicateNontermMods [UpName]
+  | IllegalProductionAdded UpName -- ^ production was already present in base non-terminal
+  | IllegalProductionDeleted UpName -- ^ production was not present in base non-terminal
   deriving (Show)

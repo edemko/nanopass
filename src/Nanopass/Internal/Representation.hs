@@ -10,6 +10,7 @@ module Nanopass.Internal.Representation
   -- * Types for Base Languages
   -- $ ir
     Language(..)
+  , LanguageInfo(..)
   , Nonterm(..)
   , Production(..)
   , TypeDesc(..)
@@ -20,7 +21,7 @@ module Nanopass.Internal.Representation
   -- * Helper Types
   , UpName, toUpName, fromUpName
   , LowName, toLowName, fromLowName
-  , UpDotName, toUpDotName, fromUpDotName
+  , UpDotName, toUpDotName, fromUpDotName, splitUpDotName
   , unDotted, upDotQualifier, upDotBase, upDotChBase
   , Name(..), Validate(..)
   ) where
@@ -28,6 +29,7 @@ module Nanopass.Internal.Representation
 import Data.Char (isLower,isUpper,isAlphaNum)
 import Data.List (intercalate)
 import Data.Map (Map)
+import GHC.Records (HasField(..))
 
 import qualified Language.Haskell.TH as TH
 
@@ -39,7 +41,7 @@ newtype UpName = UpName String
 
 -- | Introduction form for 'UpName'
 toUpName :: String -> Maybe UpName
-toUpName (c:cs) | isUpper c && all isAlphaNumderscore cs = Just $ UpName (c:cs)
+toUpName (c:cs) | isUpper c && all isAlphaNum cs = Just $ UpName (c:cs)
 toUpName _ = Nothing
 
 -- | Elimination form for 'UpName'
@@ -52,7 +54,7 @@ newtype LowName = LowName String
 
 -- | Introduction form for 'LowName'
 toLowName :: String -> Maybe LowName
-toLowName (c:cs) | isLower c && all isAlphaNumderscore cs = Just $ LowName (c:cs)
+toLowName (c:cs) | isLower c && all isAlphaNum cs = Just $ LowName (c:cs)
 toLowName _ = Nothing
 
 -- | Elimination form for 'LowName'
@@ -97,18 +99,20 @@ upDotBase (UpDotName _ x) = x
 upDotChBase :: UpDotName -> UpName -> UpDotName
 upDotChBase (UpDotName xs _) y = UpDotName xs y
 
+splitUpDotName :: UpDotName -> ([UpName], UpName)
+splitUpDotName (UpDotName xs x) = (xs, x)
 
 data Validate = Valid | Unvalidated
 data Name v n where
-  SourceName :: { name :: n } -> Name 'Unvalidated n
-  ValidName :: { base :: n, th :: TH.Name } -> Name 'Valid n
+  SourceName :: { name_ :: n } -> Name 'Unvalidated n
+  ValidName :: { base_ :: n, th :: TH.Name } -> Name 'Valid n
 deriving instance (Show n) => Show (Name v n)
 deriving instance (Eq n) => Eq (Name v n)
 deriving instance (Ord n) => Ord (Name v n)
 
-
-isAlphaNumderscore :: Char -> Bool
-isAlphaNumderscore c = isAlphaNum c || c == '_'
+instance HasField "name" (Name v n) n where
+  getField (SourceName n) = n
+  getField (ValidName n _) = n
 
 ----------------------------
 ------ Base Languages ------
@@ -129,12 +133,17 @@ isAlphaNumderscore c = isAlphaNum c || c == '_'
 -- 3. R is a relation in V × (V ∪ Σ)*. Members of this relation are called rewrite rules (and map to the arguments of a Haskell data constructor).
 -- 4. S is the start symbol, though it is not used by nanopass.
 
-data Language v = Language
-  { langName :: !(Name v UpDotName)
-  , langParams :: ![Name v LowName]
-  , nonterms :: !(Map UpName (Nonterm v))
+data Language v n = Language
+  { langName :: Name v n
+  , langInfo :: LanguageInfo v
+  }
+  deriving(Show)
+
+data LanguageInfo v = LanguageInfo
+  { langParams :: ![Name v LowName]
+  , nonterms :: !(Map UpName (Nonterm v)) -- TODO make this a list
   , originalProgram :: !(Maybe String)
-  , baseDefdLang :: !(Maybe (Language 'Valid))
+  , baseDefdLang :: !(Maybe (Language 'Valid UpDotName))
   }
   deriving(Show)
 
@@ -170,7 +179,7 @@ data TypeDesc v
 data LangMod = LangMod
   { baseLang :: UpDotName
   , newLang :: UpName
-  , newParams :: [LowName]
+  , newParams :: [Name 'Unvalidated LowName]
   , nontermsEdit :: [NontermsEdit]
   , originalModProgram :: Maybe String
   }

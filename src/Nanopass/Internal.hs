@@ -8,7 +8,7 @@
 -- * "Nanopass.Internal.Parser" is responsible for parsing quasiquotes into language definitions and modifications.
 -- * "Nanopass.Internal.Validate" is responsible for ensuring language definitions are well-formed.
 -- * TODO "Nanopass.Internal.Decode" is responsible for recovering languages from Haskell data types.
--- * TODO "Nanopass.Internal.Extend" is responsible for modifying a base language to create a new language.
+-- * "Nanopass.Internal.Extend" is responsible for modifying a base language to create a new language.
 -- * TODO "Nanopass.Internal.GenTypes" is responsible for generating types for a language.
 -- * TODO "Nanopass.Internal.GenXlate" is responsible for generating passes (translation functions and types) between languages.
 module Nanopass.Internal () where

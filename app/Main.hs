@@ -14,7 +14,7 @@ import qualified Lang as L0
 (L1 from L0:L0
   (* Expr
     (- Lam)
-    (+ Lam String ($ Expr))
+    (+ Lam String Expr)
     (- Nope)
   )
   (- Stmt)
