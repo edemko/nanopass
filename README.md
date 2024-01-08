@@ -99,7 +99,7 @@ Even academic authors sometimes don't avail themselves of such data structures, 
 -- language definition.
 $(pure [])
 
-[defpass|LambdaLet :-> Lambda|]
+[defpass|(from LambdaLet to Lambda)|]
 
 compile :: L0.Expr -> Expr
 compile = runIdentity . descendExpr xlate

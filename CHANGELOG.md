@@ -2,6 +2,11 @@
 
 ## 0.0.3.0 -- YYYY-mm-dd
 
+* Stop generating records for each production.
+  (This would create partial fields which were a rich source of bugs for clients.)
+* Re-wrote internal representation of languages.
+* New, more consistent grammar for languages, modifications, and passes.
+* Exported internal modules, for the sake of developer documentation only.
 
 ## 0.0.2.1 -- 2024-01-02
 

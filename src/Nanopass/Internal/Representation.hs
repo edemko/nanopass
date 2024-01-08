@@ -8,7 +8,7 @@
 module Nanopass.Internal.Representation
   (
   -- * Types for Base Languages
-  -- $ ir
+  -- $ir
     Language(..)
   , LanguageInfo(..)
   , Nonterm(..)
@@ -101,6 +101,7 @@ upDotBase (UpDotName _ x) = x
 upDotChBase :: UpDotName -> UpName -> UpDotName
 upDotChBase (UpDotName xs _) y = UpDotName xs y
 
+-- | Get the last part of a dotted name and it's prefix
 splitUpDotName :: UpDotName -> ([UpName], UpName)
 splitUpDotName (UpDotName xs x) = (xs, x)
 
@@ -135,43 +136,72 @@ instance HasField "name" (Name v n) n where
 -- 3. R is a relation in V × (V ∪ Σ)*. Members of this relation are called rewrite rules (and map to the arguments of a Haskell data constructor).
 -- 4. S is the start symbol, though it is not used by nanopass.
 
+-- | This attributes a name to a set of grammatical types.
+-- Languages can have different names in different contexts;
+-- importantly, they must not be qualified when defining, but they may need to be dotted when referring to a language from another module.
 data Language v n = Language
   { langName :: Name v n
   , langInfo :: LanguageInfo v
   }
   deriving(Show)
 
+-- | Seen as a Haskell entity, each 'Language' is a set of mutually-recursive types.
+-- Seen from the persepctive of a CFG, each of these types is a non-terminal used to define the abstract grammar of a language.
+--
+-- See 'Language' for attributing a name to a set of these types.
 data LanguageInfo v = LanguageInfo
   { langParams :: ![Name v LowName]
+  -- ^ type parameters; these apply to each of the 'Nonterm' types
   , nonterms :: !(Map UpName (Nonterm v)) -- TODO make this a list
   , originalProgram :: !(Maybe String)
   , baseDefdLang :: !(Maybe (Language 'Valid UpDotName))
   }
   deriving(Show)
 
+-- | Seen as a Haskell entity, each 'Nonterm' is a single type with some number of constructors.
+-- Seem from the perspective of a CFG, each 'Nonterm' is… well, a non-terminal symbol.
+--
+-- 'Nonterm's are the primary constituent of a 'Language'.
 data Nonterm v = Nonterm
   { nontermName :: !(Name v UpName)
   , productions :: !(Map UpName (Production v))
   }
   deriving(Show)
 
--- | Seen as a Haskell entity, each 'Production' maps to a constructor for a data type.
+-- | Seen as a Haskell entity, each 'Production' maps to a constructor for a 'Nonterm' data type.
 -- Seen from the perspective of a CFG, each 'Production' maps to a single rewrite rule.
+--
+-- 'Production's are the primary constituent of 'Nonterm's.
 data Production v = Production
   { prodName :: !(Name v UpName)
   , subterms :: ![TypeDesc v]
   }
   deriving(Show)
 
+-- | Seen as a Haskell entity, a 'TypeDesc' gives the type of an argument of a constructor ('Production').
+-- Seen from the perspective of a CFG, each 'TypeDesc' is a symbol (terminal or non-terminal) on the right-hand side of a rewrite rule.
+--
+-- 'TypeDesc's are the primary constituent of 'Production's.
 data TypeDesc v
   = RecursiveType UpName
+  -- ^ a non-terminal symbol/recursive use of a 'Nonterm' type
+  --
+  -- These types need not be applied to any arguments, the language 'langParams' get auromatically applied.
   | VarType (Name v LowName)
+  -- ^ allows the use of 'langParams' as terminal symbols
   | CtorType (Name v UpDotName) [TypeDesc v]
+  -- ^ allows the use of plain (not defined by nanopass) Haskell types,
+  -- either as terminal symbols, or as combinators over non-terminal and terminal symbols
   | ListType (TypeDesc v) -- because otherwise, you'd have to always be saying `type List a = [a]`
+  -- ^ nanopass has built-in knowledge of lists, so they are represented specially as opposed to with 'CtorType'
   | MaybeType (TypeDesc v)
+  -- ^ nanopass has built-in knowledge of optionals, so they are represented specially as opposed to with 'CtorType'
   | NonEmptyType (TypeDesc v)
+  -- ^ nanopass has built-in knowledge of non-empty lists, so they are represented specially as opposed to with 'CtorType'
   | UnitType
+  -- ^ nanopass has built-in knowledge of the unit type, so they are represented specially as opposed to with 'CtorType'
   | TupleType (TypeDesc v) (TypeDesc v) [TypeDesc v]
+  -- ^ nanopass has built-in knowledge of the tuple types, so they are represented specially as opposed to with 'CtorType'
   deriving(Eq,Show)
 
 ---------------------------------
