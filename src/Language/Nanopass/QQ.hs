@@ -19,12 +19,10 @@ import Language.Haskell.TH (Q, Dec)
 import Language.Haskell.TH.Quote (QuasiQuoter(..))
 import Language.Nanopass.Xlate (mkXlate)
 import Nanopass.Internal.Validate (validateLanguage)
-import Nanopass.Internal.Parser (parseLanguage,Loc(..))
-import Text.Parse.Stupid (Sexpr(..))
+import Nanopass.Internal.Parser (Loc(..),parseLanguage,parsePass)
 
 import qualified Data.Text.Lazy as LT
 import qualified Language.Haskell.TH as TH
-import qualified Text.Parse.Stupid as Stupid
 import qualified Text.Pretty.Simple as PP
 
 -- | Define a language, either from scratch or by derivation from an existing language.
@@ -88,27 +86,21 @@ deflang = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
 --
 -- More details and examples are given in the [readme](https://github.com/edemko/nanopass/blob/master/README.md).
 --
--- The syntax is:
---
--- >  ⟨Up.Name⟩ :-> ⟨Up.Name⟩
+-- TODO document the syntax here, but for now, see 'parsePass' for a grammar.
 defpass :: QuasiQuoter
 defpass = QuasiQuoter (bad "expression") (bad "pattern") (bad "type") go
   where
   go input = do
-    sexprs <- case Stupid.parse input of
-      Just it -> pure it
-      Nothing -> fail "sexpr syntax error"
-    case parseDefPass sexprs of
-      Right (l1Name, l2Name) -> do
-        l1 <- reifyLang l1Name
-        l2 <- reifyLang l2Name
+    loc <- TH.location <&> \l -> Loc
+        { file = l.loc_filename
+        , line = fst l.loc_start
+        , col = snd l.loc_start
+        }
+    case parsePass (loc, input) of
+      Right ok -> do
+        l1 <- reifyLang ok.sourceLang.name
+        l2 <- reifyLang ok.targetLang.name
         mkXlate l1 l2
-      Left err -> fail err
+      Left err -> fail $ (LT.unpack . PP.pShow) err -- TODO
   bad ctx _ = fail $ "`defpass` quasiquoter cannot be used in a " ++ ctx ++ "context,\n\
                      \it can only appear as part of declarations."
-  parseDefPass :: [Sexpr String] -> Either String (UpDotName, UpDotName)
-  parseDefPass [Atom l1, Atom ":->", Atom l2]
-    | Just l1Name <- toUpDotName l1
-    , Just l2Name <- toUpDotName l2
-      = Right (l1Name, l2Name)
-  parseDefPass _ = Left "expecting two language names, separated by :->"

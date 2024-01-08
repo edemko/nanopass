@@ -24,7 +24,7 @@ deriving stock instance Show Expr
 
 $(pure [])
 
-[defpass|L0.L0 :-> L1|]
+[defpass|(from L0:L0 to L1)|]
 
 main :: IO ()
 main = do

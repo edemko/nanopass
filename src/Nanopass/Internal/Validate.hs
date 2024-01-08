@@ -14,12 +14,12 @@ module Nanopass.Internal.Validate
 
 import Nanopass.Internal.Representation
 
+import Control.Monad (forM,when)
 import Data.Functor ((<&>))
 import Data.List (nub, (\\))
-import Control.Monad (forM,when)
 import Data.Map (Map)
 import Data.Set (Set)
-import Nanopass.Internal.Parser (Error(..))
+import Nanopass.Internal.Error (Error(..))
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set

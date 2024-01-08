@@ -29,18 +29,19 @@ module Nanopass.Internal.Parser
   , parseNontermBody
   , parseProductionBody
   , parseType
+  -- * Passes
+  , parsePass
   -- * S-Expressions
   , getSexpr
   , Loc(..)
   , toUpColonName
-  -- * Error Reporting
-  , Error(..)
   ) where
 
 import Nanopass.Internal.Representation
 
 import Control.Monad (forM)
 import Data.Functor ((<&>))
+import Nanopass.Internal.Error (Error(..))
 import Text.Megaparsec (runParser',State(..),PosState(..),SourcePos(..),errorBundlePretty)
 import Text.Megaparsec.Char (space1)
 import Text.Megaparsec.Pos (defaultTabWidth,mkPos)
@@ -355,7 +356,7 @@ data Loc = Loc
 -- | This serves as an adapter between Template Haskell and whatever s-expression parser I decide to use.
 getSexpr :: (Loc, String) -> Either Error SExpr
 getSexpr (loc, inp) = case runParser' (sc *> parseSExpr def <* sc) state0 of
-    (_, Left err) -> Left . SexprError $ errorBundlePretty err
+    (_, Left err) -> Left . SExprError $ errorBundlePretty err
     (_, Right sexpr) -> Right sexpr
   where
   sc :: Parser ()
@@ -385,50 +386,36 @@ getSexpr (loc, inp) = case runParser' (sc *> parseSExpr def <* sc) state0 of
 toUpColonName :: String -> Maybe UpDotName
 toUpColonName = toUpDotName . map (\c -> if c == ':' then '.' else c)
 
+--------------------------
+------ Parse Passes ------
+--------------------------
 
------------------------------
------- Error Reporting ------
------------------------------
 
-data Error
-  = SexprError String
-  -- parseLanguage
-  | ExpectingLanguage SExpr
-  | ExpectedLangLHS SExpr
-  | ExpectedLangName String
-  | ExpectingTypeVariable SExpr
-  -- parseLanguageMod
-  | ExpectingBaseLanguage (Maybe SExpr)
-  | ExpectingKwFromAfterLHS SExpr
-  | UnexpectedSExprAfterDelete SExpr
-  | ExpectingPlusMinusStar SExpr
-  | ExpectingNontermsEdit SExpr
-  | ExpectingPlusMinus SExpr
-  | ExpectingProductionsEdit SExpr
-  -- parseNonterm
-  | ExpectedNontermName (Maybe SExpr)
-  | ExpectedNonterm SExpr
-  -- parseProduction
-  | ExpectedConstructorName (Maybe SExpr)
-  | ExpectedProduction SExpr
-  -- parseType
-  | ExpectingTypeNameOrVar String
-  | ExpectedTypeConstructor SExpr
-  | UnexpectedLiteral SExpr
-  | ConsListsDisallowed SExpr
-  | UnexpectedTypeApplicationstoRecursiveType UpName
-  -- validation
-  | DuplicateLanguageParams [LowName]
-  | UnrecognizedNonterm UpName
-  | UnrecognizedTypeVariable LowName
-  -- modification
-  | IllegalNontermAddedAlsoDeleted UpName -- ^ nonterm was both added and deleted by a language modifier
-  | IllegalNontermModificationAlsoAdded UpName -- ^ nonterm was both added and modified by a language modifier
-  | IllegalNontermModificationAlsoDeleted UpName -- ^ nonterm was both modified and deleted by a language modifier
-  | IllegalNontermAdded UpName -- ^ nonterminal was already present in base language
-  | IllegalNontermModified UpName -- ^ nonterminal was not present in base language
-  | IllegalNontermDeleted UpName -- ^ nonterminal was not present in base language
-  | DuplicateNontermMods [UpName]
-  | IllegalProductionAdded UpName -- ^ production was already present in base non-terminal
-  | IllegalProductionDeleted UpName -- ^ production was not present in base non-terminal
-  deriving (Show)
+-- | @
+-- Pass
+--   ::= (\'from\' \<UpColonCase\>    source lagnuage name
+--        \'to\' \<UpColonCase\>      target lagnuage name
+--          \<string…\>               documentation
+-- @
+--
+-- * for @UpColonCase@, see 'toUpColonName'
+parsePass :: (Loc, String) -> Either Error Pass
+parsePass inp = parsePassSexpr =<< getSexpr inp
+
+parsePassSexpr :: SExpr -> Either Error Pass
+parsePassSexpr (List (Atom"from":l1:Atom "to":l2:rest)) = do
+  sourceLang <- case l1 of
+    Atom str | Just name <- toUpColonName str -> pure $ SourceName name
+    _ -> Left $ ExpectedUpDotNameAfterFrom l1
+  targetLang <- case l2 of
+    Atom str | Just name <- toUpColonName str -> pure $ SourceName name
+    _ -> Left $ ExpectedUpDotNameAfterTo l2
+  let (docs, after) = spanDocstrs rest
+  case after of
+    [] -> pure ()
+    _ -> Left $ UnexpectedSExprAfterPass sourceLang.name targetLang.name
+  pure Pass
+    { sourceLang
+    , targetLang
+    }
+parsePassSexpr other = Left $ MissingFromTo other

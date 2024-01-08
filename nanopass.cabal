@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: nanopass
-version: 0.0.2.1
+version: 0.0.3.0
 synopsis: Create compilers using small passes and many intermediate representations.
 description:
   Uses Template Haskell to facilitate using a vast number of intermediate representations.
@@ -28,6 +28,7 @@ library
   exposed-modules:
     Language.Nanopass
     Nanopass.Internal
+    Nanopass.Internal.Error
     Nanopass.Internal.Extend
     Nanopass.Internal.Parser
     Nanopass.Internal.Representation
@@ -36,7 +37,6 @@ library
     Language.Nanopass.LangDef
     Language.Nanopass.QQ
     Language.Nanopass.Xlate
-    Text.Parse.Stupid
   build-depends:
     , base >=4.11.1 && <4.19
     , containers >=0.6 && <0.7

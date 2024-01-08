@@ -18,6 +18,8 @@ module Nanopass.Internal.Representation
   , LangMod(..)
   , NontermsEdit(..)
   , ProductionsEdit(..)
+  -- * Types for Passes
+  , Pass(..)
   -- * Helper Types
   , UpName, toUpName, fromUpName
   , LowName, toLowName, fromLowName
@@ -195,3 +197,13 @@ data ProductionsEdit
   = AddProd (Production 'Unvalidated)
   | DelProd UpName
   deriving(Show)
+
+--------------------
+------ Passes ------
+--------------------
+
+data Pass = Pass
+  { sourceLang :: Name 'Unvalidated UpDotName
+  , targetLang :: Name 'Unvalidated UpDotName
+  }
+  deriving (Show)

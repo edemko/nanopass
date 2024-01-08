@@ -21,7 +21,7 @@ import Data.Functor ((<&>))
 import Data.List (nub, (\\))
 import Data.Map (Map)
 import Data.Set (Set)
-import Nanopass.Internal.Parser (Error(..))
+import Nanopass.Internal.Error (Error(..))
 import Nanopass.Internal.Validate (validateParams,validateNonterm,validateProd)
 
 import qualified Data.Map as Map
